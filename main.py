@@ -1,4 +1,3 @@
-# main.py - kompletny plik (wklej całość)
 import os
 import re
 import traceback
@@ -15,7 +14,6 @@ from email_validator import validate_email, EmailNotValidError
 
 load_dotenv()
 
-# CONFIG
 BASE_XLSX = os.getenv("BASE_XLSX", "baza.xlsx")
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", 587)) if os.getenv("SMTP_PORT") else 587
@@ -31,15 +29,12 @@ os.makedirs(TMP_DIR, exist_ok=True)
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
-# ---------------------------
-# Helpers: load dataframe + detect columns
-# ---------------------------
 def _load_df():
     if not os.path.exists(BASE_XLSX):
         raise FileNotFoundError(f"Plik nie znaleziony: {BASE_XLSX}")
     df = pd.read_excel(BASE_XLSX, sheet_name="Arkusz1", header=0, dtype=str)
     df = df.fillna("")
-    # normalize cells: strip, remove surrounding quotes if present
+
     def _norm(v):
         if isinstance(v, str):
             s = v.strip()
@@ -47,6 +42,7 @@ def _load_df():
                 s = s[1:-1].strip()
             return s
         return v
+
     df = df.applymap(_norm)
     return df
 
@@ -54,7 +50,6 @@ def _detect_columns(df):
     cols = {c.strip().lower(): c for c in df.columns}
     if 'gt' in cols and 'kw' in cols and 'pion' in cols:
         return cols['gt'], cols['kw'], cols['pion']
-    # fallback to positions 0,1,2
     col0 = df.columns[0]
     col1 = df.columns[1] if len(df.columns) > 1 else df.columns[0]
     col2 = df.columns[2] if len(df.columns) > 2 else df.columns[0]
@@ -81,9 +76,6 @@ def _safe_sheet_name(name, existing_names=None):
     existing_names.add(candidate)
     return candidate
 
-# ---------------------------
-# Styling helpers (openpyxl)
-# ---------------------------
 def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
     vals = []
     for c in range(col_start_idx, col_end_idx + 1):
@@ -100,19 +92,17 @@ def _style_workbook(path):
     header_fill = PatternFill(start_color="F47B20", end_color="F47B20", fill_type="solid")
     header_font = Font(bold=True)
     row_to_compress = 2
-    col_i = 9   # I
-    col_w = 23  # W
+    col_i = 9
+    col_w = 23
     for name in wb.sheetnames:
         if name == "Wymagania":
             continue
         ws = wb[name]
-        # style header row
         if ws.max_row >= 1:
             for cell in list(ws[1]):
                 cell.fill = header_fill
                 cell.font = header_font
                 cell.alignment = Alignment(wrap_text=True, vertical="center")
-        # compress row 2 values I..W (if exist)
         try:
             _compress_row_values_left(ws, row_to_compress, col_i, min(col_w, ws.max_column))
         except Exception:
@@ -120,9 +110,6 @@ def _style_workbook(path):
     wb.save(path)
     wb.close()
 
-# ---------------------------
-# Extract attribute heuristics
-# ---------------------------
 def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
     import re
     def _clean_val(v):
@@ -138,7 +125,6 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
     cols_map = {c.strip().lower(): c for c in row.index}
     for attr in desired_attributes:
         found = ""
-        # direct column
         if attr.strip().lower() in cols_map:
             found = _clean_val(row[cols_map[attr.strip().lower()]])
             out[attr] = found
@@ -173,82 +159,54 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
         out[attr] = found
     return out
 
-# ---------------------------
-# Excel writer (core)
-# ---------------------------
 def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename):
-    """
-    Zapisuje plik xlsx. Dla każdego GT+KW:
-    - nagłówki = desired_base + dynamiczne nagłówki z pól 'Punktor' (np. 'Materiał:', 'W zestawie:')
-    - wiersze z danymi zawierają wartości tylko dla desired_base (EAN, Nr.Art,...)
-    - kolumny dynamiczne (od H dalej) są puste (pola do wypełnienia)
-    Zwraca (tmp_path, found_any).
-    """
+    """ Zapisuje plik xlsx. Dla każdego GT+KW: - nagłówki = desired_base + dynamiczne nagłówki z pól 'Punktor' (np. 'Materiał:', 'W zestawie:') - wiersze z danymi zawierają wartości tylko dla desired_base (EAN, Nr.Art,...) - kolumny dynamiczne (od H dalej) są puste (pola do wypełnienia) Zwraca (tmp_path, found_any). """
     tmp_path = os.path.join(TMP_DIR, secure_filename(filename))
     found_any = False
     used_sheet_names = set()
-
-    # wykryj kolumny GT/KW/PION
     gt_col, kw_col, pion_col = _detect_columns(df)
     app.logger.info("Detected columns: GT=%s, KW=%s, PION=%s", gt_col, kw_col, pion_col)
-
-    # znajdź kolumny punktorowe (Punktor 1..N). Jeśli brak, użyj typowego zakresu kolumn 11..25
     punktor_cols = [c for c in df.columns if str(c).strip().lower().startswith("punktor")]
     if not punktor_cols:
         candidate_idxs = list(range(11, min(len(df.columns), 26)))
         punktor_cols = [df.columns[i] for i in candidate_idxs if i < len(df.columns)]
     app.logger.info("Punktor cols sample: %s", punktor_cols[:8])
-
     def _clean_val(v):
         if v is None:
             return ""
         if not isinstance(v, str):
             v = str(v)
         s = v.strip()
-        # usuń otaczające cudzysłowy jeśli są
         if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
             s = s[1:-1].strip()
         return s
-
     with pd.ExcelWriter(tmp_path, engine="xlsxwriter") as writer:
         for gt in gt_list:
             for kw in kw_list:
                 sel = df[
-                    (df[pion_col].astype(str).str.strip().str.lower() == str(pion).strip().lower()) &
-                    (df[gt_col].astype(str).str.strip().str.lower() == str(gt).strip().lower()) &
-                    (df[kw_col].astype(str).str.strip().str.lower() == str(kw).strip().lower())
+                    (df[pion_col].astype(str).str.strip().str.lower() == str(pion).strip().lower())
+                    & (df[gt_col].astype(str).str.strip().str.lower() == str(gt).strip().lower())
+                    & (df[kw_col].astype(str).str.strip().str.lower() == str(kw).strip().lower())
                 ]
                 app.logger.info("Filter result for GT=%s KW=%s: rows=%d", gt, kw, len(sel))
                 if sel.shape[0] == 0:
                     continue
                 found_any = True
-
-                # --- dynamiczne nagłówki: pobierz etykiety z kolumn PUNKTOR z pierwszego dopasowanego wiersza ---
-                # (używamy unikalnej kolejności: kolejność kolumn punktorowych)
                 first_row = sel.iloc[0]
                 dyn_headers = []
                 for pc in punktor_cols:
                     val = _clean_val(first_row.get(pc, ""))
                     if val:
-                        # upewnij się, że etykieta ma ":" na końcu (zgodnie z Twoim przykładem)
                         if not val.endswith(":") and not val.endswith(":"):
-                            # nie wymuszamy dwukropka, zostawimy tak jak w źródle
                             pass
-                        # dodaj tylko niepuste unikalne etykiety
                         if val not in dyn_headers:
                             dyn_headers.append(val)
-
-                # jeśli nie ma punktorów, użyj listy desired_attributes jako fallback (ale puste wartości)
                 if not dyn_headers and desired_attributes:
                     dyn_headers = desired_attributes.copy()
-
-                # przygotuj DataFrame: kolumny to desired_base + dyn_headers
                 all_columns = desired_base + dyn_headers
-
                 rows_out = []
                 for _, row in sel.iterrows():
                     out_row = {}
-                    # wypełnij kolumny bazowe (EAN, Nr. Art..., itp.) z wiersza źródłowego
                     for base_col in desired_base:
                         matched = None
                         for c in row.index:
@@ -260,15 +218,10 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                             out_row[base_col] = "" if pd.isna(val) else val
                         else:
                             out_row[base_col] = ""
-
-                    # dla dynamicznych nagłówków: zostaw puste (to są pola do wypełnienia)
                     for h in dyn_headers:
                         out_row[h] = ""
-
                     rows_out.append(out_row)
-
                 out_df = pd.DataFrame(rows_out, columns=all_columns)
-
                 raw_name = f"{gt} – {kw}"
                 sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
                 try:
@@ -276,8 +229,6 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                     app.logger.info("Wrote sheet: %s rows=%d headers=%s", sheet_name, len(out_df), all_columns)
                 except Exception as ex:
                     app.logger.exception("Error writing sheet %s: %s", sheet_name, str(ex))
-
-        # specjalny arkusz Oświetlenie (jeśli użyty tryb uniwersalny)
         if str(pion).strip().lower() == "oświetlenie" and (not gt_list):
             sel = df[df[pion_col].astype(str).str.strip().str.lower() == "oświetlenie"]
             if sel.shape[0] > 0:
@@ -287,8 +238,6 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                 sel2.to_excel(writer, sheet_name=sheet_name, index=False)
                 app.logger.info("Wrote Oświetlenie sheet %s rows=%d", sheet_name, sel2.shape[0])
                 found_any = True
-
-        # zawsze dodaj Wymagania
         reqs = [
             '📸 Wymagania dotyczące zdjęć:',
             '- Zdjęcia minimum 1500 px na krótszy bok',
@@ -304,19 +253,13 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
             '- Dane producenta - GPSR, są to dane, które pokazują się na stronie obi.pl jako dane wytwórcy, dane jakie należy podać to: Pełna nazwa firmy, adres siedziby oraz adres e-mail'
         ]
         pd.DataFrame(reqs).to_excel(writer, sheet_name="Wymagania", index=False, header=False)
-        app.logger.info("_write_excel_and_format finished; found_any=%s tmp_path=%s", found_any, tmp_path)
-
-    # stylowanie (nagłówki pomarańczowe itd.) — pozostawiamy istniejący styler
+    app.logger.info("_write_excel_and_format finished; found_any=%s tmp_path=%s", found_any, tmp_path)
     try:
         _style_workbook(tmp_path)
     except Exception:
         app.logger.exception("Error styling workbook %s", tmp_path)
-
     return tmp_path, found_any
 
-# ---------------------------
-# Wrapper: create excel selection
-# ---------------------------
 def _create_excel_for_selection(pion, gt_list, kw_list):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     filename = f"Formatki-{pion}-{timestamp}.xlsx"
@@ -341,9 +284,6 @@ def _create_excel_for_selection(pion, gt_list, kw_list):
     tmp_path, found_any = _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename)
     return tmp_path, filename, found_any
 
-# ---------------------------
-# Email send
-# ---------------------------
 def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
         raise RuntimeError("SMTP nie jest skonfigurowany (SMTP_HOST/SMTP_USER/SMTP_PASS).")
@@ -373,9 +313,6 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
         s.send_message(msg)
     return True
 
-# ---------------------------
-# Routes / API
-# ---------------------------
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -465,9 +402,9 @@ def _debug_rows():
         df = _load_df()
         gt_col, kw_col, pion_col = _detect_columns(df)
         sel = df[
-            (df[pion_col].astype(str).str.strip().str.lower() == str(pion).strip().lower()) &
-            (df[gt_col].astype(str).str.strip().str.lower() == str(gt).strip().lower()) &
-            (df[kw_col].astype(str).str.strip().str.lower() == str(kw).strip().lower())
+            (df[pion_col].astype(str).str.strip().str.lower() == str(pion).strip().lower())
+            & (df[gt_col].astype(str).str.strip().str.lower() == str(gt).strip().lower())
+            & (df[kw_col].astype(str).str.strip().str.lower() == str(kw).strip().lower())
         ]
         sample = sel.head(40).fillna("").to_dict(orient="records")
         return jsonify({"count": int(sel.shape[0]), "sample": sample})
@@ -516,16 +453,16 @@ def api_generate():
         bg = "#F47B20"
         html_body = f"""
         <html>
-          <body style="font-family:Arial, sans-serif; background:{bg}; color:#ffffff; padding:20px;">
+        <body style="font-family:Arial, sans-serif; background:{bg}; color:#ffffff; padding:20px;">
             <div style="max-width:680px; margin:0 auto; background:#ffffff; color:#000; padding:20px; border-radius:8px;">
-              <div style="display:flex; align-items:center; gap:12px;">
-                {logo_html}
-                <h2 style="color:{bg}; margin:0;">Twoje formatki</h2>
-              </div>
-              <p>Cześć,<br>W załączeniu znajdziesz wygenerowany plik z formatkami dla pionu <strong>{pion}</strong>.</p>
-              <p>Pozdrawiamy,<br>Zespół</p>
+                <div style="display:flex; align-items:center; gap:12px;">
+                    {logo_html}
+                    <h2 style="color:{bg}; margin:0;">Twoje formatki</h2>
+                </div>
+                <p>Cześć,<br>W załączeniu znajdziesz wygenerowany plik z formatkami dla pionu <strong>{pion}</strong>.</p>
+                <p>Pozdrawiamy,<br>Zespół</p>
             </div>
-          </body>
+        </body>
         </html>
         """
         _send_email_with_attachment(emails, f"Twój plik z formatkami - {pion}", html_body, tmp_path)
@@ -535,8 +472,5 @@ def api_generate():
         app.logger.error("Exception in api_generate:\n%s", tb)
         return jsonify({"success": False, "error": str(e), "traceback": tb}), 500
 
-# ---------------------------
-# Run app
-# ---------------------------
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
