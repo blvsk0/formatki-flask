@@ -28,6 +28,43 @@ os.makedirs(TMP_DIR, exist_ok=True)
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+from flask import Flask, request, render_template_string, redirect, url_for
+
+app = Flask(__name__)
+ALLOWED_DOMAIN = "obi.pl"
+form_html = """
+<!doctype html>
+<html>
+  <head>
+    <title>Logowanie</title>
+  </head>
+  <body>
+    <h2>Wpisz służbowy email</h2>
+    <form method="POST">
+      <input type="email" name="email" required placeholder="twoj@firma.pl">
+      <button type="submit">Wyślij</button>
+    </form>
+    {% if error %}
+      <p style="color: red;">{{ error }}</p>
+    {% endif %}
+  </body>
+</html>
+"""
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    error = None
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        # sprawdzamy domenę
+        if email.endswith("@" + ALLOWED_DOMAIN):
+            return f"<h2>Witaj {email}! ✅</h2>"
+        else:
+            error = "Tylko adresy @firma.pl są dozwolone."
+    return render_template_string(form_html, error=error)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
 
 def _load_df():
     if not os.path.exists(BASE_XLSX):
