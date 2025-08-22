@@ -1,0 +1,56 @@
+﻿<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Formatki - Formularz</title>
+  <link rel="icon" href="/static/images/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/style.css">
+  <base target="_top">
+</head>
+<body>
+  <button id="themeToggle">
+    <span id="themeIcon">🌙</span>
+    <span id="themeText">Tryb nocny</span>
+  </button>
+
+  <div id="controls">
+    <button onclick="window.open('https://example.com/instrukcja','_blank')">📄 Instrukcja</button>
+  </div>
+
+  <img class="logo" src="data:image/svg+xml,%3csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2085%2020'%20width='85'%20height='20'%3e%3cg%20fill='none'%20fill-rule='evenodd'%3e%3cpath%20d='M57.64%209.93C62.11%208.21%2061.951.29%2054.89.29L29.8.296l-.197%202.93s3.724%201.763%204.276%202.02l-.5%208.771c-.429.255-4.48%202.713-4.48%202.713l-.192%203.123h25.144c7.871%200%208.693-8.096%203.787-9.923zm-10.41%204.596h-2.89l.16-2.845h2.943c1.974%200%201.836%202.84-.213%202.845zm.385-7.062l-2.891-.002.132-2.567h2.893c1.837-.001%201.846%202.569-.134%202.569zM20.02%200H8.945C3.292%200%20.464%204.477.232%207.862L.041%2010.8C-.383%2014.198%202.514%2020%208.02%2020h10.983c5.322.023%208.733-3.159%209.227-8.731l.2-2.89C28.65%205.366%2027.02%200%2020.02%200zm-4.027%2012.9c-.042.99-.648%202.037-1.76%202.052H13.12c-.906-.013-1.288-.737-1.237-2.004l.382-6.57c.03-1.015.8-1.964%201.625-1.964h1.103c.905-.005%201.458.729%201.458%201.849z'%20fill='%23181715'/%3e%3cpath%20d='M63.248.551l-.197%202.916s4.474%202.297%205.016%202.57L67.61%2013.7c-.469.25-5.181%202.792-5.181%202.792l-.148%203.099h21.605l.193-3s-4.165-2.708-4.622-3l.388-7.642c.5-.241%205.008-2.453%205.008-2.453L85%20.551z'%20fill='%23181715'%20fill-rule='nonzero'/%3e%3cpath%20d='M83.433%2013.379l-.366-.853h-.31v.853h-.202v-1.824h.477c.305%200%20.55.038.55.4v.132c0%20.216-.095.353-.3.407l.38.886h-.229zm-.058-1.402c0-.279-.192-.251-.408-.251h-.212v.624h.205c.22%200%20.414.024.414-.279v-.094z'%20fill='%23181715'%20fill-rule='nonzero'/%3e%3cpath%20d='M5.325%202.632a2.56%202.56%200%2001-2.564%202.561%202.562%202.562%200%20110-5.125%202.565%202.565%200%20012.564%202.564z'%20stroke='%23181715'%20stroke-width='.714'%20transform='matrix(.5813%200%200%20.57313%2081.426%2010.946)'/%3e%3cpath%20d='M84.03%201.463l-.072%201.452-5.083%202.453-.442%208.704s4.332%202.766%204.69%202.996l-.105%201.612h-19.77l.079-1.63c.366-.193%205.25-2.787%205.25-2.787l.523-8.765-5.086-2.567.099-1.467%2019.917-.001z'%20fill='%23ff7e21'%20fill-rule='nonzero'/%3e%3cpath%20d='M56.462%2010.358l-1.223-.32%201.19-.425c4.908-1.715%204.393-8.41-1.523-8.41l-24.24.004c-.03.42-.077%201.134-.1%201.458l4.346%202.018-.563%209.865-4.556%202.715c-.018.272-.073%201.183-.103%201.678h24.16c6.746.001%207.909-7.185%202.612-8.583zm-9.23%205.015h-3.799l.255-4.537h3.756c3.126-.001%202.97%204.53-.211%204.537zm.424-7.063l-3.836-.002.218-4.262%203.647.001c3.181%200%202.9%204.263-.03%204.263zM20.018.912H8.945c-4.227%200-7.328%202.826-7.715%207.023l-.19%202.93c-.377%203.52%202.375%208.224%206.982%208.224h10.985c6.549.03%207.966-4.935%208.23-7.899l.197-2.868c.24-2.73-1.119-7.41-7.416-7.41zm-2.674%205.47l-.456%206.566c-.068%201.604-1.204%202.831-2.648%202.852h-1.125c-1.518-.022-2.19-1.3-2.126-2.891l.382-6.567c.043-1.477%201.22-2.773%202.52-2.773h1.1c1.216-.005%202.405.97%202.354%202.795z'%20fill='%23ff7e21'/%3e%3c/g%3e%3c/svg%3e" alt="Logo">
+
+  <div class="container">
+    <div id="spinnerContainer" style="text-align:center; display:none;">
+      <div class="flower-loader">🌸</div>
+    </div>
+    <h1>Formularz do pobrania pliku</h1>
+    <form id="myForm">
+      <label for="pion">Wybierz pion:</label>
+      <select id="pion" name="pion" required></select>
+
+      <label for="gtInput">Wybierz grupę towarową:</label>
+      <input list="gtList" id="gtInput" placeholder="Wpisz lub wybierz...">
+      <datalist id="gtList"></datalist>
+      <div class="tags" id="gtTags"></div>
+
+      <label for="kwInput">Wybierz kategorię wyszukiwania:</label>
+      <input list="kwList" id="kwInput" placeholder="Z wybranej grupy..." disabled>
+      <datalist id="kwList"></datalist>
+      <div class="tags" id="kwTags"></div>
+
+      <div id="uniqueFormatInfo">
+        Formatki dla oświetlenia są uniwersalne – prosimy o wpisanie maila i naciśnięcie "Wyślij"
+      </div>
+
+      <label for="email">Adres(y) e-mail (oddziel przecinkami):</label>
+      <input type="text" id="email" name="email" placeholder="przyklad@mail1.pl, przyklad@mail2.pl" required>
+
+      <button type="submit">Wyślij</button>
+      <div id="message"></div>
+    </form>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
