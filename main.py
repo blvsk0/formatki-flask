@@ -28,43 +28,8 @@ os.makedirs(TMP_DIR, exist_ok=True)
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
-from flask import Flask, request, render_template_string, redirect, url_for
 
-app = Flask(__name__)
 ALLOWED_DOMAIN = "obi.pl"
-form_html = """
-<!doctype html>
-<html>
-  <head>
-    <title>Logowanie</title>
-  </head>
-  <body>
-    <h2>Wpisz służbowy email</h2>
-    <form method="POST">
-      <input type="email" name="email" required placeholder="twoj@firma.pl">
-      <button type="submit">Wyślij</button>
-    </form>
-    {% if error %}
-      <p style="color: red;">{{ error }}</p>
-    {% endif %}
-  </body>
-</html>
-"""
-
-@app.route("/", methods=["GET", "POST"])
-def index():
-    error = None
-    if request.method == "POST":
-        email = request.form.get("email", "").strip().lower()
-        # sprawdzamy domenę
-        if email.endswith("@" + ALLOWED_DOMAIN):
-            return f"<h2>Witaj {email}! ✅</h2>"
-        else:
-            error = "Tylko adresy @firma.pl są dozwolone."
-    return render_template_string(form_html, error=error)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
 
 def _load_df():
     if not os.path.exists(BASE_XLSX):
@@ -197,7 +162,6 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
     return out
 
 def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename):
-    """ Zapisuje plik xlsx. Dla każdego GT+KW: - nagłówki = desired_base + dynamiczne nagłówki z pól 'Punktor' (np. 'Materiał:', 'W zestawie:') - wiersze z danymi zawierają wartości tylko dla desired_base (EAN, Nr.Art,...) - kolumny dynamiczne (od H dalej) są puste (pola do wypełnienia) Zwraca (tmp_path, found_any). """
     tmp_path = os.path.join(TMP_DIR, secure_filename(filename))
     found_any = False
     used_sheet_names = set()
@@ -354,6 +318,7 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
 @app.route("/index")
 def index2():
     return render_template("index.html")
+
 @app.route("/api/get_data_structure", methods=["GET"])
 def api_get_data_structure():
     try:
@@ -476,13 +441,28 @@ def api_generate():
         kw_list = data.get("kwList", []) or []
         emails_raw = data.get("emails", data.get("email", "")) or ""
         if isinstance(emails_raw, str):
-            emails = [e.strip() for e in emails_raw.split(",") if e.strip()]
+            emails_input = [e.strip() for e in emails_raw.split(",") if e.strip()]
         elif isinstance(emails_raw, list):
-            emails = [e.strip() for e in emails_raw if e and str(e).strip()]
+            emails_input = [e.strip() for e in emails_raw if e and str(e).strip()]
         else:
-            emails = []
+            emails_input = []
+
+        # filtrujemy i walidujemy adresy, akceptujemy tylko domenę ALLOWED_DOMAIN
+        emails = []
+        for e in emails_input:
+            try:
+                v = validate_email(e)
+                addr = v["email"]
+                if addr.lower().endswith("@" + ALLOWED_DOMAIN):
+                    emails.append(addr)
+                else:
+                    app.logger.info("Skipping non-allowed domain: %s", addr)
+            except EmailNotValidError:
+                app.logger.warning("Invalid email skipped: %s", e)
+
         if not pion or (pion.lower() != "oświetlenie" and (not gt_list or not kw_list)) or not emails:
-            return jsonify({"success": False, "error": "Brakuje parametrów (pion/gtList/kwList/emails)."}), 400
+            return jsonify({"success": False, "error": f"Brakuje parametrów (pion/gtList/kwList) lub brak poprawnych adresów z domeny @{ALLOWED_DOMAIN}."}), 400
+
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
         if not os.path.exists(tmp_path):
             return jsonify({"success": False, "error": "Plik nie został utworzony."}), 500
