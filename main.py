@@ -351,9 +351,9 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
     return True
 
 @app.route("/")
-def index():
+@app.route("/index")
+def index2():
     return render_template("index.html")
-
 @app.route("/api/get_data_structure", methods=["GET"])
 def api_get_data_structure():
     try:
