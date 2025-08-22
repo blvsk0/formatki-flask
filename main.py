@@ -90,27 +90,85 @@ def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
         ws.cell(row=row_idx, column=col_start_idx + i).value = v
 
 def _style_workbook(path):
+    from openpyxl.utils import get_column_letter
     wb = load_workbook(path)
     header_fill = PatternFill(start_color="F47B20", end_color="F47B20", fill_type="solid")
     header_font = Font(bold=True)
-    row_to_compress = 2
-    col_i = 9
-    col_w = 23
+    header_row_height = 30
+    # dla każdego arkusza
     for name in wb.sheetnames:
         if name == "Wymagania":
             continue
         ws = wb[name]
+
+        # jeśli pierwszy wiersz jest pusty w pierwszej kolumnie, usuń tę kolumnę
+        try:
+            first_cell = ws.cell(row=1, column=1).value
+            if (first_cell is None or str(first_cell).strip() == "") and ws.max_column > 1:
+                # usuń pierwszą kolumnę (przesunie wszystkie komórki w lewo)
+                ws.delete_cols(1)
+        except Exception:
+            # jeśli coś pójdzie nie tak — nie przerywaj stylowania
+            pass
+
+        # stylizacja nagłówka (pierwszy wiersz)
         if ws.max_row >= 1:
             for cell in list(ws[1]):
                 cell.fill = header_fill
                 cell.font = header_font
-                cell.alignment = Alignment(wrap_text=True, vertical="center")
+                cell.alignment = Alignment(wrap_text=True, horizontal="center", vertical="center")
+
+        # ustaw wysokość wiersza nagłówka
         try:
-            _compress_row_values_left(ws, row_to_compress, col_i, min(col_w, ws.max_column))
+            ws.row_dimensions[1].height = header_row_height
         except Exception:
-            app.logger.exception("Error compressing row 2 for sheet %s", name)
+            pass
+
+        # spróbuj skompresować/ustawić wcięcia dla drugiego wiersza (jeśli istnieje)
+        try:
+            _compress_row_values_left(ws, 2, 9, min(23, ws.max_column))
+        except Exception:
+            app.logger.debug("compress_row_values_left failed for sheet %s", name)
+
+        # automatyczne dopasowanie szerokości kolumn na podstawie zawartości w kilku wierszach
+        try:
+            # ograniczamy analizę do pierwszych N wierszy żeby nie czytać całego dużego arkusza
+            max_rows_to_check = min(ws.max_row, 20)
+            for col_idx in range(1, ws.max_column + 1):
+                max_len = 0
+                for row_idx in range(1, max_rows_to_check + 1):
+                    val = ws.cell(row=row_idx, column=col_idx).value
+                    if val is None:
+                        continue
+                    # traktujemy wartości jako tekst i usuwamy nowe linie do obliczeń
+                    s = str(val).replace("\n", " ")
+                    if len(s) > max_len:
+                        max_len = len(s)
+                # minimalna szerokość i skala
+                if max_len <= 0:
+                    width = 8
+                else:
+                    width = min(max(10, int(max_len * 1.1)), 60)  # nie za szeroko, nie za wąsko
+                col_letter = get_column_letter(col_idx)
+                try:
+                    ws.column_dimensions[col_letter].width = width
+                except Exception:
+                    pass
+        except Exception:
+            app.logger.debug("auto column width failed for sheet %s", name)
+
+        # dodatkowo wymuś zawijanie tekstu w komórkach (opcjonalnie)
+        try:
+            for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+                for cell in row:
+                    if cell.value and isinstance(cell.value, str) and "\n" in cell.value:
+                        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        except Exception:
+            pass
+
     wb.save(path)
     wb.close()
+
 
 def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
     import re
