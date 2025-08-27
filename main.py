@@ -57,69 +57,33 @@ def _detect_columns(df):
     col2 = df.columns[2] if len(df.columns) > 2 else df.columns[0]
     return col0, col1, col2
 
-# --- REPLACED: improved safe sheet namer (keeps GT + KW readable) ---
 def _safe_sheet_name(name, existing_names=None):
-    """
-    Safe sheet name generator:
-    - usuwa niedozwolone znaki
-    - maksymalna długość = 31
-    - jeśli nazwa jest za długa, próbuje zachować fragment GT i KW przy separatorze ' - '
-    - zapewnia unikalność przy użyciu existing_names set
-    """
+    
     if existing_names is None:
-        existing_names = set()
+        existing = _safe_sheet_name._internal_used
+    else:
+        existing = existing_names
 
-    # basic cleanup: normalize dashes & whitespace, remove forbidden chars
     if not name:
         base = "Sheet"
     else:
-        s = str(name)
-        s = s.replace("–", "-").replace("—", "-").replace("·", "-")
-        s = re.sub(r'\s+', ' ', s).strip()
-        s = re.sub(r'[:\\\/?\*\[\]]', '-', s)
-        base = s.strip()
+        invalid_chars = r'[]:*?/\\'
+        base = ''.join(c if c not in invalid_chars else ' ' for c in str(name))
+        base = base.strip()
+
     if not base:
         base = "Sheet"
 
-    max_len = 31
+    candidate = base
+    i = 1
+    while candidate in existing:
+        candidate = f"{base}_{i}"
+        i += 1
 
-    if len(base) <= max_len:
-        candidate = base
-    else:
-        parts = re.split(r'\s*-\s*', base)
-        if len(parts) >= 2:
-            gt_part = parts[0].strip()
-            kw_part = parts[-1].strip()
-            sep = " - "
-            half = (max_len - len(sep)) // 2
-            gt_keep = gt_part[:half].strip()
-            kw_allowed = max_len - len(sep) - len(gt_keep)
-            if kw_allowed > 0:
-                kw_keep = kw_part[-kw_allowed:].strip()
-                candidate = f"{gt_keep}{sep}{kw_keep}"
-                candidate = candidate[:max_len].strip()
-                if not candidate:
-                    candidate = base[:max_len]
-            else:
-                candidate = base[:max_len]
-        else:
-            candidate = base[:max_len]
-
-    candidate = candidate.rstrip()
-
-    if candidate in existing_names:
-        i = 1
-        while True:
-            suffix = f"_{i}"
-            allowed = max_len - len(suffix)
-            new_cand = (candidate[:allowed] + suffix) if allowed > 0 else candidate[:max_len]
-            if new_cand not in existing_names:
-                candidate = new_cand
-                break
-            i += 1
-
-    existing_names.add(candidate)
+    existing.add(candidate)
     return candidate
+
+_safe_sheet_name._internal_used = set()
 
 
 def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
@@ -139,44 +103,34 @@ def _style_workbook(path):
     header_fill = PatternFill(start_color="F47B20", end_color="F47B20", fill_type="solid")
     header_font = Font(bold=True)
     header_row_height = 30
-    # dla każdego arkusza
     for name in wb.sheetnames:
         if name == "Wymagania":
             continue
         ws = wb[name]
 
-        # jeśli pierwszy wiersz jest pusty w pierwszej kolumnie, usuń tę kolumnę
         try:
             first_cell = ws.cell(row=1, column=1).value
             if (first_cell is None or str(first_cell).strip() == "") and ws.max_column > 1:
-                # usuń pierwszą kolumnę (przesunie wszystkie komórki w lewo)
                 ws.delete_cols(1)
         except Exception:
-            # jeśli coś pójdzie nie tak — nie przerywaj stylowania
             pass
-
-        # stylizacja nagłówka (pierwszy wiersz)
         if ws.max_row >= 1:
             for cell in list(ws[1]):
                 cell.fill = header_fill
                 cell.font = header_font
                 cell.alignment = Alignment(wrap_text=True, horizontal="center", vertical="center")
 
-        # ustaw wysokość wiersza nagłówka
         try:
             ws.row_dimensions[1].height = header_row_height
         except Exception:
             pass
 
-        # spróbuj skompresować/ustawić wcięcia dla drugiego wiersza (jeśli istnieje)
         try:
             _compress_row_values_left(ws, 2, 9, min(23, ws.max_column))
         except Exception:
             app.logger.debug("compress_row_values_left failed for sheet %s", name)
 
-        # automatyczne dopasowanie szerokości kolumn na podstawie zawartości w kilku wierszach
         try:
-            # ograniczamy analizę do pierwszych N wierszy żeby nie czytać całego dużego arkusza
             max_rows_to_check = min(ws.max_row, 20)
             for col_idx in range(1, ws.max_column + 1):
                 max_len = 0
@@ -184,15 +138,13 @@ def _style_workbook(path):
                     val = ws.cell(row=row_idx, column=col_idx).value
                     if val is None:
                         continue
-                    # traktujemy wartości jako tekst i usuwamy nowe linie do obliczeń
                     s = str(val).replace("\n", " ")
                     if len(s) > max_len:
                         max_len = len(s)
-                # minimalna szerokość i skala
                 if max_len <= 0:
                     width = 8
                 else:
-                    width = min(max(10, int(max_len * 1.1)), 60)  # nie za szeroko, nie za wąsko
+                    width = min(max(10, int(max_len * 1.1)), 60)
                 col_letter = get_column_letter(col_idx)
                 try:
                     ws.column_dimensions[col_letter].width = width
@@ -201,7 +153,6 @@ def _style_workbook(path):
         except Exception:
             app.logger.debug("auto column width failed for sheet %s", name)
 
-        # dodatkowo wymuś zawijanie tekstu w komórkach (opcjonalnie)
         try:
             for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
                 for cell in row:
@@ -268,6 +219,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
     tmp_path = os.path.join(TMP_DIR, secure_filename(filename))
     found_any = False
     used_sheet_names = set()
+    sheet_map = {}
     gt_col, kw_col, pion_col = _detect_columns(df)
     app.logger.info("Detected columns: GT=%s, KW=%s, PION=%s", gt_col, kw_col, pion_col)
     punktor_cols = [c for c in df.columns if str(c).strip().lower().startswith("punktor")]
@@ -327,13 +279,28 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                     rows_out.append(out_row)
                 out_df = pd.DataFrame(rows_out, columns=all_columns)
 
-                # --- REPLACED: build sheet name from GT + KW using ascii separator and sanitize ---
-                gt_str = str(gt).strip()
+                # build sheet name: first 4 digits from GT (if present) or first 4 chars, plus full KW
+                gt_raw = str(gt).strip()
                 kw_str = str(kw).strip()
-                gt_str = re.sub(r'\s+', ' ', gt_str)
-                kw_str = re.sub(r'\s+', ' ', kw_str)
-                raw_name = f"{gt_str} - {kw_str}"
+                # normalize whitespace
+                gt_norm = re.sub(r'\s+', ' ', gt_raw)
+                kw_norm = re.sub(r'\s+', ' ', kw_str)
+
+                # extract digits from GT; prefer digits, otherwise use first 4 chars (letters)
+                digits = "".join(re.findall(r'\d', gt_norm))
+                if digits:
+                    code = digits[:4]
+                else:
+                    # fallback: first 4 non-space characters of GT
+                    no_space = gt_norm.replace(" ", "")
+                    code = no_space[:4] if len(no_space) > 0 else "GT"
+
+                # final raw name: CODE - full KW
+                raw_name = f"{code} - {kw_norm}"
+
+                # generate safe (and unique) sheet name
                 sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
+                sheet_map[sheet_name] = raw_name
 
                 try:
                     out_df.to_excel(writer, sheet_name=sheet_name, index=False)
@@ -364,6 +331,15 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
             '- Dane producenta - GPSR, są to dane, które pokazują się na stronie obi.pl jako dane wytwórcy, dane jakie należy podać to: Pełna nazwa firmy, adres siedziby oraz adres e-mail'
         ]
         pd.DataFrame(reqs).to_excel(writer, sheet_name="Wymagania", index=False, header=False)
+
+        # zapisz indeks mapowania nazw (krótka nazwa arkusza -> pełne GT - KW)
+        if sheet_map:
+            try:
+                import pandas as _pd
+                idx_df = _pd.DataFrame([(k, v) for k, v in sheet_map.items()], columns=["sheet_name", "full_name"])
+                idx_df.to_excel(writer, sheet_name="Index", index=False)
+            except Exception:
+                app.logger.debug("Nie udało się zapisać arkusza Index z mapowaniem nazw")
     app.logger.info("_write_excel_and_format finished; found_any=%s tmp_path=%s", found_any, tmp_path)
     try:
         _style_workbook(tmp_path)
@@ -559,7 +535,6 @@ def api_generate():
         else:
             emails_input = []
 
-        # filtrujemy i walidujemy adresy, akceptujemy tylko domenę ALLOWED_DOMAIN
         emails = []
         for e in emails_input:
             try:
