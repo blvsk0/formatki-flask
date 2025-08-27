@@ -32,6 +32,7 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 ALLOWED_DOMAIN = "obi.pl"
 
+
 def _load_df():
     if not os.path.exists(BASE_XLSX):
         raise FileNotFoundError(f"Plik nie znaleziony: {BASE_XLSX}")
@@ -49,6 +50,7 @@ def _load_df():
     df = df.applymap(_norm)
     return df
 
+
 def _detect_columns(df):
     cols = {c.strip().lower(): c for c in df.columns}
     if 'gt' in cols and 'kw' in cols and 'pion' in cols:
@@ -58,49 +60,28 @@ def _detect_columns(df):
     col2 = df.columns[2] if len(df.columns) > 2 else df.columns[0]
     return col0, col1, col2
 
-def _safe_sheet_name(name, existing_names=None):
-    """
-    Generate sheet name safe for Excel:
-      - replace forbidden chars
-      - truncate to 31 chars (showing '...' if truncated)
-      - ensure uniqueness using existing_names (or internal set)
-    """
-    if existing_names is None:
-        existing = _safe_sheet_name._internal_used
-    else:
-        existing = existing_names
 
+def _safe_sheet_name(name, existing_names=None):
+    if existing_names is None:
+        existing_names = set()
     if not name:
         base = "Sheet"
     else:
-        invalid_chars = r'[]:*?/\\'
-        base = ''.join(c if c not in invalid_chars else ' ' for c in str(name))
-        base = re.sub(r'\s+', ' ', base).strip()
-
+        base = re.sub(r'[:\\\/\?\*\[\]]', '-', str(name)).strip()
     if not base:
         base = "Sheet"
-
     max_len = 31
-    if len(base) <= max_len:
-        candidate = base
-    else:
-        candidate = base[:max_len - 3].rstrip() + "..."
-
-    if candidate in existing:
-        i = 1
-        while True:
-            suffix = f"_{i}"
-            allowed = max_len - len(suffix)
-            new_cand = (candidate[:allowed] + suffix) if len(candidate) > allowed else candidate + suffix
-            if new_cand not in existing:
-                candidate = new_cand
-                break
-            i += 1
-
-    existing.add(candidate)
+    base = base[:max_len]
+    candidate = base
+    i = 1
+    while candidate in existing_names:
+        suffix = f"_{i}"
+        allowed = max_len - len(suffix)
+        candidate = (base[:allowed] + suffix) if allowed > 0 else base[:max_len]
+        i += 1
+    existing_names.add(candidate)
     return candidate
 
-_safe_sheet_name._internal_used = set()
 
 def _cmp_norm_for_match(s):
     """
@@ -119,6 +100,7 @@ def _cmp_norm_for_match(s):
     s = re.sub(r'\s+', ' ', s)
     return s.lower()
 
+
 def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
     vals = []
     for c in range(col_start_idx, col_end_idx + 1):
@@ -130,41 +112,52 @@ def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
     for i, v in enumerate(vals):
         ws.cell(row=row_idx, column=col_start_idx + i).value = v
 
+
 def _style_workbook(path):
     from openpyxl.utils import get_column_letter
     wb = load_workbook(path)
     header_fill = PatternFill(start_color="F47B20", end_color="F47B20", fill_type="solid")
     header_font = Font(bold=True)
     header_row_height = 30
+
+    # dla każdego arkusza
     for name in wb.sheetnames:
         if name == "Wymagania":
             continue
         ws = wb[name]
 
+        # jeśli pierwszy wiersz jest pusty w pierwszej kolumnie, usuń tę kolumnę
         try:
             first_cell = ws.cell(row=1, column=1).value
             if (first_cell is None or str(first_cell).strip() == "") and ws.max_column > 1:
+                # usuń pierwszą kolumnę (przesunie wszystkie komórki w lewo)
                 ws.delete_cols(1)
         except Exception:
+            # jeśli coś pójdzie nie tak — nie przerywaj stylowania
             pass
 
+        # stylizacja nagłówka (pierwszy wiersz)
         if ws.max_row >= 1:
             for cell in list(ws[1]):
                 cell.fill = header_fill
                 cell.font = header_font
                 cell.alignment = Alignment(wrap_text=True, horizontal="center", vertical="center")
 
+        # ustaw wysokość wiersza nagłówka
         try:
             ws.row_dimensions[1].height = header_row_height
         except Exception:
             pass
 
+        # spróbuj skompresować/ustawić wcięcia dla drugiego wiersza (jeśli istnieje)
         try:
             _compress_row_values_left(ws, 2, 9, min(23, ws.max_column))
         except Exception:
             app.logger.debug("compress_row_values_left failed for sheet %s", name)
 
+        # automatyczne dopasowanie szerokości kolumn na podstawie zawartości w kilku wierszach
         try:
+            # ograniczamy analizę do pierwszych N wierszy żeby nie czytać całego dużego arkusza
             max_rows_to_check = min(ws.max_row, 20)
             for col_idx in range(1, ws.max_column + 1):
                 max_len = 0
@@ -172,13 +165,15 @@ def _style_workbook(path):
                     val = ws.cell(row=row_idx, column=col_idx).value
                     if val is None:
                         continue
+                    # traktujemy wartości jako tekst i usuwamy nowe linie do obliczeń
                     s = str(val).replace("\n", " ")
                     if len(s) > max_len:
                         max_len = len(s)
+                # minimalna szerokość i skala
                 if max_len <= 0:
                     width = 8
                 else:
-                    width = min(max(10, int(max_len * 1.1)), 60)
+                    width = min(max(10, int(max_len * 1.1)), 60)  # nie za szeroko, nie za wąsko
                 col_letter = get_column_letter(col_idx)
                 try:
                     ws.column_dimensions[col_letter].width = width
@@ -187,6 +182,7 @@ def _style_workbook(path):
         except Exception:
             app.logger.debug("auto column width failed for sheet %s", name)
 
+        # dodatkowo wymuś zawijanie tekstu w komórkach (opcjonalnie)
         try:
             for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
                 for cell in row:
@@ -198,8 +194,10 @@ def _style_workbook(path):
     wb.save(path)
     wb.close()
 
+
 def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
     import re
+
     def _clean_val(v):
         if v is None:
             return ""
@@ -209,6 +207,7 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
         if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
             s = s[1:-1].strip()
         return s
+
     out = {}
     cols_map = {c.strip().lower(): c for c in row.index}
     for attr in desired_attributes:
@@ -247,6 +246,7 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
         out[attr] = found
     return out
 
+
 def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename):
     tmp_path = os.path.join(TMP_DIR, secure_filename(filename))
     found_any = False
@@ -269,20 +269,14 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
             s = s[1:-1].strip()
         return s
 
-    sheet_counter = 1
-
     with pd.ExcelWriter(tmp_path, engine="xlsxwriter") as writer:
         for gt in gt_list:
             for kw in kw_list:
-                pion_norm = _cmp_norm_for_match(pion)
-                gt_norm = _cmp_norm_for_match(gt)
-                kw_norm = _cmp_norm_for_match(kw)
-
-                mask_pion = df[pion_col].astype(str).map(_cmp_norm_for_match) == pion_norm
-                mask_gt = df[gt_col].astype(str).map(_cmp_norm_for_match) == gt_norm
-                mask_kw = df[kw_col].astype(str).map(_cmp_norm_for_match) == kw_norm
-
-                sel = df[mask_pion & mask_gt & mask_kw]
+                sel = df[
+                    (df[pion_col].astype(str).str.strip().str.lower() == str(pion).strip().lower())
+                    & (df[gt_col].astype(str).str.strip().str.lower() == str(gt).strip().lower())
+                    & (df[kw_col].astype(str).str.strip().str.lower() == str(kw).strip().lower())
+                ]
 
                 app.logger.info("Filter result for GT=%s KW=%s: rows=%d", gt, kw, len(sel))
                 if sel.shape[0] == 0:
@@ -294,6 +288,8 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                 for pc in punktor_cols:
                     val = _clean_val(first_row.get(pc, ""))
                     if val:
+                        if not val.endswith(":") and not val.endswith(":"):
+                            pass
                         if val not in dyn_headers:
                             dyn_headers.append(val)
                 if not dyn_headers and desired_attributes:
@@ -318,29 +314,25 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                     rows_out.append(out_row)
                 out_df = pd.DataFrame(rows_out, columns=all_columns)
 
-                gt_raw = str(gt).strip()
-                kw_str = str(kw).strip()
-                gt_norm_for_code = re.sub(r'\s+', ' ', gt_raw)
-                kw_norm = re.sub(r'\s+', ' ', kw_str)
-
-                digits = "".join(re.findall(r'\d', gt_norm_for_code))
-                if digits:
-                    code = digits[:4]
-                else:
-                    no_space = gt_norm_for_code.replace(" ", "")
-                    code = no_space[:4] if len(no_space) > 0 else "GT"
-
-                raw_name = f"{code} - {kw_norm}"
-
-                # zamiast nadawać niestandardową nazwę, użyjemy standardowych nazw: Sheet1, Sheet2, ...
-                sheet_name = f"Sheet{sheet_counter}"
-                sheet_counter += 1
+                raw_name = f"{gt} – {kw}"
+                sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
 
                 try:
                     out_df.to_excel(writer, sheet_name=sheet_name, index=False)
                     app.logger.info("Wrote sheet: %s rows=%d headers=%s", sheet_name, len(out_df), all_columns)
                 except Exception as ex:
                     app.logger.exception("Error writing sheet %s: %s", sheet_name, str(ex))
+
+        # specjalne traktowanie "oświetlenia" — tak jak w oryginale
+        if str(pion).strip().lower() == "oświetlenie" and (not gt_list):
+            sel = df[df[pion_col].astype(str).str.strip().str.lower() == "oświetlenie"]
+            if sel.shape[0] > 0:
+                drop_cols = [c for c in ["GT", "KW", "PION", "Podział"] if c in sel.columns]
+                sel2 = sel.drop(columns=drop_cols, errors="ignore")
+                sheet_name = _safe_sheet_name("Oświetlenie", existing_names=used_sheet_names)
+                sel2.to_excel(writer, sheet_name=sheet_name, index=False)
+                app.logger.info("Wrote Oświetlenie sheet %s rows=%d", sheet_name, sel2.shape[0])
+                found_any = True
 
         reqs = [
             '📸 Wymagania dotyczące zdjęć:',
@@ -365,6 +357,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
         app.logger.exception("Error styling workbook %s", tmp_path)
     return tmp_path, found_any
 
+
 def _create_excel_for_selection(pion, gt_list, kw_list):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     filename = f"Formatki-{pion}-{timestamp}.xlsx"
@@ -388,6 +381,7 @@ def _create_excel_for_selection(pion, gt_list, kw_list):
     ]
     tmp_path, found_any = _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename)
     return tmp_path, filename, found_any
+
 
 def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
@@ -418,10 +412,12 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
         s.send_message(msg)
     return True
 
+
 @app.route("/")
 @app.route("/index")
 def index2():
     return render_template("index.html")
+
 
 @app.route("/api/get_data_structure", methods=["GET"])
 def api_get_data_structure():
@@ -443,6 +439,7 @@ def api_get_data_structure():
         app.logger.exception("get_data_structure error")
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/api/get_gt", methods=["GET"])
 def api_get_gt():
     pion = request.args.get("pion", "")
@@ -455,6 +452,7 @@ def api_get_gt():
     except Exception as e:
         app.logger.exception("get_gt error")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/get_kw_for_gt_list", methods=["POST"])
 def api_get_kw_for_gt_list():
@@ -475,6 +473,7 @@ def api_get_kw_for_gt_list():
     except Exception as e:
         app.logger.exception("get_kw_for_gt_list error")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/resolve_gt_codes", methods=["POST"])
 def api_resolve_gt_codes():
@@ -498,6 +497,7 @@ def api_resolve_gt_codes():
         app.logger.exception("resolve_gt_codes error")
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/_debug_rows", methods=["POST"])
 def _debug_rows():
     data = request.get_json(force=True)
@@ -518,6 +518,7 @@ def _debug_rows():
         app.logger.exception("_debug_rows error")
         return jsonify({"error": str(e)}), 500
 
+
 @app.route("/api/generate_debug", methods=["POST"])
 def api_generate_debug():
     try:
@@ -525,7 +526,7 @@ def api_generate_debug():
         pion = data.get("pion", "").strip()
         gt_list = data.get("gtList", []) or []
         kw_list = data.get("kwList", []) or []
-        if not pion or (not gt_list or not kw_list):
+        if not pion or (pion.lower() != "oświetlenie" and (not gt_list or not kw_list)):
             return jsonify({"success": False, "error": "Brakuje parametrów (pion/gtList/kwList)."}), 400
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
         if not os.path.exists(tmp_path):
@@ -535,6 +536,7 @@ def api_generate_debug():
         tb = traceback.format_exc()
         app.logger.error("Exception in api_generate_debug:\n%s", tb)
         return jsonify({"success": False, "error": str(e), "traceback": tb}), 500
+
 
 @app.route("/api/generate", methods=["POST"])
 def api_generate():
@@ -551,6 +553,7 @@ def api_generate():
         else:
             emails_input = []
 
+        # filtrujemy i walidujemy adresy, akceptujemy tylko domenę ALLOWED_DOMAIN
         emails = []
         for e in emails_input:
             try:
@@ -563,7 +566,7 @@ def api_generate():
             except EmailNotValidError:
                 app.logger.warning("Invalid email skipped: %s", e)
 
-        if not pion or (not gt_list or not kw_list) or not emails:
+        if not pion or (pion.lower() != "oświetlenie" and (not gt_list or not kw_list)) or not emails:
             return jsonify({"success": False, "error": f"Brakuje parametrów (pion/gtList/kwList) lub brak poprawnych adresów z domeny @{ALLOWED_DOMAIN}."}), 400
 
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
@@ -591,6 +594,7 @@ def api_generate():
         tb = traceback.format_exc()
         app.logger.error("Exception in api_generate:\n%s", tb)
         return jsonify({"success": False, "error": str(e), "traceback": tb}), 500
+
 
 if __name__ == "__main__":
     app.run(debug=False, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
