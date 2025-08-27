@@ -57,26 +57,70 @@ def _detect_columns(df):
     col2 = df.columns[2] if len(df.columns) > 2 else df.columns[0]
     return col0, col1, col2
 
+# --- REPLACED: improved safe sheet namer (keeps GT + KW readable) ---
 def _safe_sheet_name(name, existing_names=None):
+    """
+    Safe sheet name generator:
+    - usuwa niedozwolone znaki
+    - maksymalna długość = 31
+    - jeśli nazwa jest za długa, próbuje zachować fragment GT i KW przy separatorze ' - '
+    - zapewnia unikalność przy użyciu existing_names set
+    """
     if existing_names is None:
         existing_names = set()
+
+    # basic cleanup: normalize dashes & whitespace, remove forbidden chars
     if not name:
         base = "Sheet"
     else:
-        base = re.sub(r'[:\\\/\?\*\[\]]', '-', str(name)).strip()
+        s = str(name)
+        s = s.replace("–", "-").replace("—", "-").replace("·", "-")
+        s = re.sub(r'\s+', ' ', s).strip()
+        s = re.sub(r'[:\\\/?\*\[\]]', '-', s)
+        base = s.strip()
     if not base:
         base = "Sheet"
+
     max_len = 31
-    base = base[:max_len]
-    candidate = base
-    i = 1
-    while candidate in existing_names:
-        suffix = f"_{i}"
-        allowed = max_len - len(suffix)
-        candidate = (base[:allowed] + suffix) if allowed > 0 else base[:max_len]
-        i += 1
+
+    if len(base) <= max_len:
+        candidate = base
+    else:
+        parts = re.split(r'\s*-\s*', base)
+        if len(parts) >= 2:
+            gt_part = parts[0].strip()
+            kw_part = parts[-1].strip()
+            sep = " - "
+            half = (max_len - len(sep)) // 2
+            gt_keep = gt_part[:half].strip()
+            kw_allowed = max_len - len(sep) - len(gt_keep)
+            if kw_allowed > 0:
+                kw_keep = kw_part[-kw_allowed:].strip()
+                candidate = f"{gt_keep}{sep}{kw_keep}"
+                candidate = candidate[:max_len].strip()
+                if not candidate:
+                    candidate = base[:max_len]
+            else:
+                candidate = base[:max_len]
+        else:
+            candidate = base[:max_len]
+
+    candidate = candidate.rstrip()
+
+    if candidate in existing_names:
+        i = 1
+        while True:
+            suffix = f"_{i}"
+            allowed = max_len - len(suffix)
+            new_cand = (candidate[:allowed] + suffix) if allowed > 0 else candidate[:max_len]
+            if new_cand not in existing_names:
+                candidate = new_cand
+                break
+            i += 1
+
     existing_names.add(candidate)
     return candidate
+
 
 def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
     vals = []
@@ -219,6 +263,7 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
         out[attr] = found
     return out
 
+
 def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename):
     tmp_path = os.path.join(TMP_DIR, secure_filename(filename))
     found_any = False
@@ -281,8 +326,15 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                         out_row[h] = ""
                     rows_out.append(out_row)
                 out_df = pd.DataFrame(rows_out, columns=all_columns)
-                raw_name = f"{gt} – {kw}"
+
+                # --- REPLACED: build sheet name from GT + KW using ascii separator and sanitize ---
+                gt_str = str(gt).strip()
+                kw_str = str(kw).strip()
+                gt_str = re.sub(r'\s+', ' ', gt_str)
+                kw_str = re.sub(r'\s+', ' ', kw_str)
+                raw_name = f"{gt_str} - {kw_str}"
                 sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
+
                 try:
                     out_df.to_excel(writer, sheet_name=sheet_name, index=False)
                     app.logger.info("Wrote sheet: %s rows=%d headers=%s", sheet_name, len(out_df), all_columns)
@@ -319,6 +371,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
         app.logger.exception("Error styling workbook %s", tmp_path)
     return tmp_path, found_any
 
+
 def _create_excel_for_selection(pion, gt_list, kw_list):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     filename = f"Formatki-{pion}-{timestamp}.xlsx"
@@ -342,6 +395,7 @@ def _create_excel_for_selection(pion, gt_list, kw_list):
     ]
     tmp_path, found_any = _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename)
     return tmp_path, filename, found_any
+
 
 def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
