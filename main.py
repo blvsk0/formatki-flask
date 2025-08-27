@@ -279,26 +279,20 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                     rows_out.append(out_row)
                 out_df = pd.DataFrame(rows_out, columns=all_columns)
 
-                # build sheet name: first 4 digits from GT (if present) or first 4 chars, plus full KW
                 gt_raw = str(gt).strip()
                 kw_str = str(kw).strip()
-                # normalize whitespace
                 gt_norm = re.sub(r'\s+', ' ', gt_raw)
                 kw_norm = re.sub(r'\s+', ' ', kw_str)
 
-                # extract digits from GT; prefer digits, otherwise use first 4 chars (letters)
                 digits = "".join(re.findall(r'\d', gt_norm))
                 if digits:
                     code = digits[:4]
                 else:
-                    # fallback: first 4 non-space characters of GT
                     no_space = gt_norm.replace(" ", "")
                     code = no_space[:4] if len(no_space) > 0 else "GT"
 
-                # final raw name: CODE - full KW
                 raw_name = f"{code} - {kw_norm}"
 
-                # generate safe (and unique) sheet name
                 sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
                 sheet_map[sheet_name] = raw_name
 
@@ -332,7 +326,6 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
         ]
         pd.DataFrame(reqs).to_excel(writer, sheet_name="Wymagania", index=False, header=False)
 
-        # zapisz indeks mapowania nazw (krótka nazwa arkusza -> pełne GT - KW)
         if sheet_map:
             try:
                 import pandas as _pd
