@@ -1,6 +1,7 @@
 import os
 import re
 import traceback
+import unicodedata
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, send_file
 from werkzeug.utils import secure_filename
@@ -58,7 +59,12 @@ def _detect_columns(df):
     return col0, col1, col2
 
 def _safe_sheet_name(name, existing_names=None):
-    
+    """
+    Generate sheet name safe for Excel:
+      - replace forbidden chars
+      - truncate to 31 chars (showing '...' if truncated)
+      - ensure uniqueness using existing_names (or internal set)
+    """
     if existing_names is None:
         existing = _safe_sheet_name._internal_used
     else:
@@ -69,22 +75,49 @@ def _safe_sheet_name(name, existing_names=None):
     else:
         invalid_chars = r'[]:*?/\\'
         base = ''.join(c if c not in invalid_chars else ' ' for c in str(name))
-        base = base.strip()
+        base = re.sub(r'\s+', ' ', base).strip()
 
     if not base:
         base = "Sheet"
 
-    candidate = base
-    i = 1
-    while candidate in existing:
-        candidate = f"{base}_{i}"
-        i += 1
+    max_len = 31
+    if len(base) <= max_len:
+        candidate = base
+    else:
+        candidate = base[:max_len - 3].rstrip() + "..."
+
+    if candidate in existing:
+        i = 1
+        while True:
+            suffix = f"_{i}"
+            allowed = max_len - len(suffix)
+            new_cand = (candidate[:allowed] + suffix) if len(candidate) > allowed else candidate + suffix
+            if new_cand not in existing:
+                candidate = new_cand
+                break
+            i += 1
 
     existing.add(candidate)
     return candidate
 
 _safe_sheet_name._internal_used = set()
 
+def _cmp_norm_for_match(s):
+    """
+    Normalize string for comparisons:
+    - unicode NFKC
+    - strip
+    - remove certain cross symbols that appear in source (✕, ×, ✖, ✗, ✘)
+    - collapse whitespace and lowercase
+    """
+    if s is None:
+        return ""
+    s = str(s)
+    s = s.strip()
+    s = unicodedata.normalize('NFKC', s)
+    s = re.sub(r'[\u2715\u00D7\u2716\u2717\u2718]', '', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s.lower()
 
 def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
     vals = []
@@ -114,6 +147,7 @@ def _style_workbook(path):
                 ws.delete_cols(1)
         except Exception:
             pass
+
         if ws.max_row >= 1:
             for cell in list(ws[1]):
                 cell.fill = header_fill
@@ -164,7 +198,6 @@ def _style_workbook(path):
     wb.save(path)
     wb.close()
 
-
 def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
     import re
     def _clean_val(v):
@@ -214,12 +247,10 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
         out[attr] = found
     return out
 
-
 def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename):
     tmp_path = os.path.join(TMP_DIR, secure_filename(filename))
     found_any = False
     used_sheet_names = set()
-    sheet_map = {}
     gt_col, kw_col, pion_col = _detect_columns(df)
     app.logger.info("Detected columns: GT=%s, KW=%s, PION=%s", gt_col, kw_col, pion_col)
     punktor_cols = [c for c in df.columns if str(c).strip().lower().startswith("punktor")]
@@ -227,6 +258,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
         candidate_idxs = list(range(11, min(len(df.columns), 26)))
         punktor_cols = [df.columns[i] for i in candidate_idxs if i < len(df.columns)]
     app.logger.info("Punktor cols sample: %s", punktor_cols[:8])
+
     def _clean_val(v):
         if v is None:
             return ""
@@ -236,25 +268,30 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
         if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
             s = s[1:-1].strip()
         return s
+
     with pd.ExcelWriter(tmp_path, engine="xlsxwriter") as writer:
         for gt in gt_list:
             for kw in kw_list:
-                sel = df[
-                    (df[pion_col].astype(str).str.strip().str.lower() == str(pion).strip().lower())
-                    & (df[gt_col].astype(str).str.strip().str.lower() == str(gt).strip().lower())
-                    & (df[kw_col].astype(str).str.strip().str.lower() == str(kw).strip().lower())
-                ]
+                pion_norm = _cmp_norm_for_match(pion)
+                gt_norm = _cmp_norm_for_match(gt)
+                kw_norm = _cmp_norm_for_match(kw)
+
+                mask_pion = df[pion_col].astype(str).map(_cmp_norm_for_match) == pion_norm
+                mask_gt = df[gt_col].astype(str).map(_cmp_norm_for_match) == gt_norm
+                mask_kw = df[kw_col].astype(str).map(_cmp_norm_for_match) == kw_norm
+
+                sel = df[mask_pion & mask_gt & mask_kw]
+
                 app.logger.info("Filter result for GT=%s KW=%s: rows=%d", gt, kw, len(sel))
                 if sel.shape[0] == 0:
                     continue
+
                 found_any = True
                 first_row = sel.iloc[0]
                 dyn_headers = []
                 for pc in punktor_cols:
                     val = _clean_val(first_row.get(pc, ""))
                     if val:
-                        if not val.endswith(":") and not val.endswith(":"):
-                            pass
                         if val not in dyn_headers:
                             dyn_headers.append(val)
                 if not dyn_headers and desired_attributes:
@@ -281,35 +318,26 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
 
                 gt_raw = str(gt).strip()
                 kw_str = str(kw).strip()
-                gt_norm = re.sub(r'\s+', ' ', gt_raw)
+                gt_norm_for_code = re.sub(r'\s+', ' ', gt_raw)
                 kw_norm = re.sub(r'\s+', ' ', kw_str)
 
-                digits = "".join(re.findall(r'\d', gt_norm))
+                digits = "".join(re.findall(r'\d', gt_norm_for_code))
                 if digits:
                     code = digits[:4]
                 else:
-                    no_space = gt_norm.replace(" ", "")
+                    no_space = gt_norm_for_code.replace(" ", "")
                     code = no_space[:4] if len(no_space) > 0 else "GT"
 
                 raw_name = f"{code} - {kw_norm}"
 
                 sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
-                sheet_map[sheet_name] = raw_name
 
                 try:
                     out_df.to_excel(writer, sheet_name=sheet_name, index=False)
                     app.logger.info("Wrote sheet: %s rows=%d headers=%s", sheet_name, len(out_df), all_columns)
                 except Exception as ex:
                     app.logger.exception("Error writing sheet %s: %s", sheet_name, str(ex))
-        if str(pion).strip().lower() == "oświetlenie" and (not gt_list):
-            sel = df[df[pion_col].astype(str).str.strip().str.lower() == "oświetlenie"]
-            if sel.shape[0] > 0:
-                drop_cols = [c for c in ["GT", "KW", "PION", "Podział"] if c in sel.columns]
-                sel2 = sel.drop(columns=drop_cols, errors="ignore")
-                sheet_name = _safe_sheet_name("Oświetlenie", existing_names=used_sheet_names)
-                sel2.to_excel(writer, sheet_name=sheet_name, index=False)
-                app.logger.info("Wrote Oświetlenie sheet %s rows=%d", sheet_name, sel2.shape[0])
-                found_any = True
+
         reqs = [
             '📸 Wymagania dotyczące zdjęć:',
             '- Zdjęcia minimum 1500 px na krótszy bok',
@@ -326,20 +354,12 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
         ]
         pd.DataFrame(reqs).to_excel(writer, sheet_name="Wymagania", index=False, header=False)
 
-        if sheet_map:
-            try:
-                import pandas as _pd
-                idx_df = _pd.DataFrame([(k, v) for k, v in sheet_map.items()], columns=["sheet_name", "full_name"])
-                idx_df.to_excel(writer, sheet_name="Index", index=False)
-            except Exception:
-                app.logger.debug("Nie udało się zapisać arkusza Index z mapowaniem nazw")
     app.logger.info("_write_excel_and_format finished; found_any=%s tmp_path=%s", found_any, tmp_path)
     try:
         _style_workbook(tmp_path)
     except Exception:
         app.logger.exception("Error styling workbook %s", tmp_path)
     return tmp_path, found_any
-
 
 def _create_excel_for_selection(pion, gt_list, kw_list):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -364,7 +384,6 @@ def _create_excel_for_selection(pion, gt_list, kw_list):
     ]
     tmp_path, found_any = _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename)
     return tmp_path, filename, found_any
-
 
 def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
@@ -502,7 +521,7 @@ def api_generate_debug():
         pion = data.get("pion", "").strip()
         gt_list = data.get("gtList", []) or []
         kw_list = data.get("kwList", []) or []
-        if not pion or (pion.lower() != "oświetlenie" and (not gt_list or not kw_list)):
+        if not pion or (not gt_list or not kw_list):
             return jsonify({"success": False, "error": "Brakuje parametrów (pion/gtList/kwList)."}), 400
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
         if not os.path.exists(tmp_path):
@@ -540,7 +559,7 @@ def api_generate():
             except EmailNotValidError:
                 app.logger.warning("Invalid email skipped: %s", e)
 
-        if not pion or (pion.lower() != "oświetlenie" and (not gt_list or not kw_list)) or not emails:
+        if not pion or (not gt_list or not kw_list) or not emails:
             return jsonify({"success": False, "error": f"Brakuje parametrów (pion/gtList/kwList) lub brak poprawnych adresów z domeny @{ALLOWED_DOMAIN}."}), 400
 
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
