@@ -3,11 +3,11 @@ import re
 import traceback
 import unicodedata
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, send_file, abort, url_for
+from flask import Flask, request, jsonify, render_template, send_file
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import pandas as pd
-from openpyxl import load_workbook, Workbook
+from openpyxl import load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from email.message import EmailMessage
 import smtplib
@@ -23,8 +23,6 @@ SMTP_PASS = os.getenv("SMTP_PASS")
 EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Formatki OBI")
 LOGO_URL = os.getenv("LOGO_URL", "")
-
-ENABLE_STYLING = os.getenv("ENABLE_STYLING", "0") == "1"
 
 TMP_DIR = os.path.join(os.getcwd(), "tmp")
 os.makedirs(TMP_DIR, exist_ok=True)
@@ -60,16 +58,13 @@ def _detect_columns(df):
     col2 = df.columns[2] if len(df.columns) > 2 else df.columns[0]
     return col0, col1, col2
 
-def _detect_columns_from_headers(headers):
-    cols = {str(c).strip().lower(): str(c) for c in headers if c is not None}
-    if 'gt' in cols and 'kw' in cols and 'pion' in cols:
-        return cols['gt'], cols['kw'], cols['pion']
-    col0 = headers[0] if len(headers) > 0 else headers[0]
-    col1 = headers[1] if len(headers) > 1 else headers[0]
-    col2 = headers[2] if len(headers) > 2 else headers[0]
-    return col0, col1, col2
-
 def _safe_sheet_name(name, existing_names=None):
+    """
+    Generate sheet name safe for Excel:
+      - replace forbidden chars
+      - truncate to 31 chars (showing '...' if truncated)
+      - ensure uniqueness using existing_names (or internal set)
+    """
     if existing_names is None:
         existing = _safe_sheet_name._internal_used
     else:
@@ -108,6 +103,13 @@ def _safe_sheet_name(name, existing_names=None):
 _safe_sheet_name._internal_used = set()
 
 def _cmp_norm_for_match(s):
+    """
+    Normalize string for comparisons:
+    - unicode NFKC
+    - strip
+    - remove certain cross symbols that appear in source (✕, ×, ✖, ✗, ✘)
+    - collapse whitespace and lowercase
+    """
     if s is None:
         return ""
     s = str(s)
@@ -245,191 +247,128 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
         out[attr] = found
     return out
 
-def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desired_attributes, filename):
+def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename):
     tmp_path = os.path.join(TMP_DIR, secure_filename(filename))
     found_any = False
     used_sheet_names = set()
+    gt_col, kw_col, pion_col = _detect_columns(df)
+    app.logger.info("Detected columns: GT=%s, KW=%s, PION=%s", gt_col, kw_col, pion_col)
+    punktor_cols = [c for c in df.columns if str(c).strip().lower().startswith("punktor")]
+    if not punktor_cols:
+        candidate_idxs = list(range(11, min(len(df.columns), 26)))
+        punktor_cols = [df.columns[i] for i in candidate_idxs if i < len(df.columns)]
+    app.logger.info("Punktor cols sample: %s", punktor_cols[:8])
 
-    if not os.path.exists(BASE_XLSX):
-        raise FileNotFoundError(f"Plik nie znaleziony: {BASE_XLSX}")
+    def _clean_val(v):
+        if v is None:
+            return ""
+        if not isinstance(v, str):
+            v = str(v)
+        s = v.strip()
+        if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+            s = s[1:-1].strip()
+        return s
 
-    wb_out = Workbook(write_only=True)
+    sheet_counter = 1
 
-    src_wb = load_workbook(BASE_XLSX, read_only=True, data_only=True)
-    src_sheet_name = "Arkusz1" if "Arkusz1" in src_wb.sheetnames else src_wb.sheetnames[0]
-    src_wb.close()
+    with pd.ExcelWriter(tmp_path, engine="xlsxwriter") as writer:
+        for gt in gt_list:
+            for kw in kw_list:
+                pion_norm = _cmp_norm_for_match(pion)
+                gt_norm = _cmp_norm_for_match(gt)
+                kw_norm = _cmp_norm_for_match(kw)
 
-    for gt in gt_list:
-        for kw in kw_list:
-            pion_norm = _cmp_norm_for_match(pion)
-            gt_norm = _cmp_norm_for_match(gt)
-            kw_norm = _cmp_norm_for_match(kw)
+                mask_pion = df[pion_col].astype(str).map(_cmp_norm_for_match) == pion_norm
+                mask_gt = df[gt_col].astype(str).map(_cmp_norm_for_match) == gt_norm
+                mask_kw = df[kw_col].astype(str).map(_cmp_norm_for_match) == kw_norm
 
-            wb_src = load_workbook(BASE_XLSX, read_only=True, data_only=True)
-            ws_src = wb_src[src_sheet_name]
+                sel = df[mask_pion & mask_gt & mask_kw]
 
-            it = ws_src.iter_rows(values_only=True)
-            try:
-                headers = next(it)
-            except StopIteration:
-                wb_src.close()
-                continue
-
-            headers = [h if h is not None else f"col{i}" for i, h in enumerate(headers)]
-            gt_col_name, kw_col_name, pion_col_name = _detect_columns_from_headers(headers)
-            header_to_idx = {str(h).strip(): i for i, h in enumerate(headers)}
-
-            def _find_idx_by_name_case_insensitive(name):
-                name_l = str(name).strip().lower()
-                for i, h in enumerate(headers):
-                    if h is None:
-                        continue
-                    if str(h).strip().lower() == name_l:
-                        return i
-                return None
-
-            gt_idx = _find_idx_by_name_case_insensitive(gt_col_name)
-            kw_idx = _find_idx_by_name_case_insensitive(kw_col_name)
-            pion_idx = _find_idx_by_name_case_insensitive(pion_col_name)
-
-            punktor_idxs = [i for i, h in enumerate(headers) if h and str(h).strip().lower().startswith("punktor")]
-            if not punktor_idxs:
-                cand = list(range(10, min(len(headers), 26)))
-                punktor_idxs = [i for i in cand if i < len(headers)]
-
-            gt_raw = str(gt).strip()
-            kw_str = str(kw).strip()
-            gt_norm_for_code = re.sub(r'\s+', ' ', gt_raw)
-            digits = "".join(re.findall(r'\d', gt_norm_for_code))
-            if digits:
-                code = digits[:4]
-            else:
-                no_space = gt_norm_for_code.replace(" ", "")
-                code = no_space[:4] if len(no_space) > 0 else "GT"
-            raw_name = f"{code} - {gt_raw} - {kw_str}"
-            sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
-
-            ws_out = wb_out.create_sheet(title=sheet_name)
-
-            ws_out.append([f"{code} - {gt_raw}"])
-            ws_out.append([kw_str])
-
-            dyn_headers = []
-            headers_written = False
-            matched_rows_count = 0
-
-            for row in it:
-                def _val(idx):
-                    if idx is None:
-                        return ""
-                    if idx < 0 or idx >= len(row):
-                        return ""
-                    v = row[idx]
-                    return "" if v is None else v
-
-                try:
-                    val_pion = _val(pion_idx)
-                    val_gt = _val(gt_idx)
-                    val_kw = _val(kw_idx)
-                except Exception:
+                app.logger.info("Filter result for GT=%s KW=%s: rows=%d", gt, kw, len(sel))
+                if sel.shape[0] == 0:
                     continue
 
-                if _cmp_norm_for_match(val_pion) == pion_norm and _cmp_norm_for_match(val_gt) == gt_norm and _cmp_norm_for_match(val_kw) == kw_norm:
-                    if not headers_written:
-                        seen = []
-                        for pi in punktor_idxs:
-                            v = _val(pi)
-                            v_s = str(v).strip() if v is not None else ""
-                            if v_s and v_s not in seen:
-                                seen.append(v_s)
-                        if seen:
-                            dyn_headers = seen
-                        else:
-                            dyn_headers = desired_attributes.copy() if desired_attributes else []
-                        all_columns = desired_base + dyn_headers
-                        ws_out.append(all_columns)
-                        headers_written = True
-
-                    out_row = []
+                found_any = True
+                first_row = sel.iloc[0]
+                dyn_headers = []
+                for pc in punktor_cols:
+                    val = _clean_val(first_row.get(pc, ""))
+                    if val:
+                        if val not in dyn_headers:
+                            dyn_headers.append(val)
+                if not dyn_headers and desired_attributes:
+                    dyn_headers = desired_attributes.copy()
+                all_columns = desired_base + dyn_headers
+                rows_out = []
+                for _, row in sel.iterrows():
+                    out_row = {}
                     for base_col in desired_base:
-                        found_idx = None
-                        base_l = base_col.strip().lower()
-                        for i, h in enumerate(headers):
-                            if h is None:
-                                continue
-                            if str(h).strip().lower() == base_l:
-                                found_idx = i
+                        matched = None
+                        for c in row.index:
+                            if str(c).strip().lower() == base_col.strip().lower():
+                                matched = c
                                 break
-                        if found_idx is not None:
-                            v = _val(found_idx)
-                            out_row.append("" if v is None else v)
+                        if matched is not None:
+                            val = row.get(matched, "")
+                            out_row[base_col] = "" if pd.isna(val) else val
                         else:
-                            out_row.append("")
+                            out_row[base_col] = ""
+                    for h in dyn_headers:
+                        out_row[h] = ""
+                    rows_out.append(out_row)
+                out_df = pd.DataFrame(rows_out, columns=all_columns)
 
-                    for dh in dyn_headers:
-                        found_val = ""
-                        for pi in punktor_idxs:
-                            v = _val(pi)
-                            if v is None:
-                                continue
-                            v_s = str(v).strip()
-                            if not v_s:
-                                continue
-                            if v_s == dh:
-                                found_val = v_s
-                                break
-                        out_row.append(found_val)
+                gt_raw = str(gt).strip()
+                kw_str = str(kw).strip()
+                gt_norm_for_code = re.sub(r'\s+', ' ', gt_raw)
+                kw_norm = re.sub(r'\s+', ' ', kw_str)
 
-                    ws_out.append(out_row)
-                    matched_rows_count += 1
-                    found_any = True
+                digits = "".join(re.findall(r'\d', gt_norm_for_code))
+                if digits:
+                    code = digits[:4]
+                else:
+                    no_space = gt_norm_for_code.replace(" ", "")
+                    code = no_space[:4] if len(no_space) > 0 else "GT"
 
-            wb_src.close()
+                raw_name = f"{code} - {kw_norm}"
 
-            if matched_rows_count == 0:
-                app.logger.info("No rows for GT=%s KW=%s (sheet=%s)", gt, kw, sheet_name)
-                ws_out.append(["(brak pasujących wierszy)"])
+                # zamiast nadawać niestandardową nazwę, użyjemy standardowych nazw: Sheet1, Sheet2, ...
+                sheet_name = f"Sheet{sheet_counter}"
+                sheet_counter += 1
 
-    reqs = [
-        '📸 Wymagania dotyczące zdjęć:',
-        '- Zdjęcia minimum 1500 px na krótszy bok',
-        '- Format .JPG',
-        '- Packshot',
-        '- Aranżacyjne',
-        '- Więcej zdjęć = lepiej',
-        '- Opisane numerem OBI lub EAN',
-        'Wymagania dotyczące opisu i tytułu:',
-        '- Tytuł artykułu online ma limit do 80 znaków',
-        '- Opis artykułu powinien zawierać najważniejsze informacje opisowe z limitem 3997 znaków (3515 bez spacji)',
-        '- Dane znajdujące się w nawiasach klamrowych („{}”) stanowią możliwe opcje do wyboru — należy wybrać jedną z nich i wpisać ją w komórkę poniżej',
-        '- Dane producenta - GPSR, są to dane, które pokazują się na stronie obi.pl jako dane wytwórcy, dane jakie należy podać to: Pełna nazwa firmy, adres siedziby oraz adres e-mail'
-    ]
-    ws_req = wb_out.create_sheet(title="Wymagania")
-    for r in reqs:
-        ws_req.append([r])
+                try:
+                    out_df.to_excel(writer, sheet_name=sheet_name, index=False)
+                    app.logger.info("Wrote sheet: %s rows=%d headers=%s", sheet_name, len(out_df), all_columns)
+                except Exception as ex:
+                    app.logger.exception("Error writing sheet %s: %s", sheet_name, str(ex))
 
+        reqs = [
+            '📸 Wymagania dotyczące zdjęć:',
+            '- Zdjęcia minimum 1500 px na krótszy bok',
+            '- Format .JPG',
+            '- Packshot',
+            '- Aranżacyjne',
+            '- Więcej zdjęć = lepiej',
+            '- Opisane numerem OBI lub EAN',
+            'Wymagania dotyczące opisu i tytułu:',
+            '- Tytuł artykułu online ma limit do 80 znaków',
+            '- Opis artykułu powinien zawierać najważniejsze informacje opisowe z limitem 3997 znaków (3515 bez spacji)',
+            '- Dane znajdujące się w nawiasach klamrowych („{}”) stanowią możliwe opcje do wyboru — należy wybrać jedną z nich i wpisać ją w komórkę poniżej',
+            '- Dane producenta - GPSR, są to dane, które pokazują się na stronie obi.pl jako dane wytwórcy, dane jakie należy podać to: Pełna nazwa firmy, adres siedziby oraz adres e-mail'
+        ]
+        pd.DataFrame(reqs).to_excel(writer, sheet_name="Wymagania", index=False, header=False)
+
+    app.logger.info("_write_excel_and_format finished; found_any=%s tmp_path=%s", found_any, tmp_path)
     try:
-        wb_out.save(tmp_path)
-    except Exception as e:
-        app.logger.exception("Błąd zapisu pliku wynikowego: %s", str(e))
-        raise
-    finally:
-        try:
-            wb_out.close()
-        except Exception:
-            pass
-
-    if ENABLE_STYLING:
-        try:
-            _style_workbook(tmp_path)
-        except Exception:
-            app.logger.exception("Error styling workbook %s", tmp_path)
-
+        _style_workbook(tmp_path)
+    except Exception:
+        app.logger.exception("Error styling workbook %s", tmp_path)
     return tmp_path, found_any
 
 def _create_excel_for_selection(pion, gt_list, kw_list):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     filename = f"Formatki-{pion}-{timestamp}.xlsx"
+    df = _load_df()
     desired_base = [
         "EAN",
         "Nr. Art dostawcy",
@@ -447,7 +386,7 @@ def _create_excel_for_selection(pion, gt_list, kw_list):
         "Maksymalna średnica mieszadła [mm]:",
         "Gwarancja: {jeśli powyżej 2 lat}"
     ]
-    tmp_path, found_any = _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desired_attributes, filename)
+    tmp_path, found_any = _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename)
     return tmp_path, filename, found_any
 
 def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
@@ -479,46 +418,10 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
         s.send_message(msg)
     return True
 
-def _send_email_with_link(to_emails, subject, html_body):
-    """
-    Lekka wersja wysyłki: nie dołączamy pliku — tylko wysyłamy wiadomość HTML (np. z linkiem do pobrania).
-    Dzięki temu nie czytamy załącznika do pamięci.
-    """
-    if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
-        raise RuntimeError("SMTP nie jest skonfigurowany (SMTP_HOST/SMTP_USER/SMTP_PASS).")
-    valid = []
-    for e in to_emails:
-        try:
-            v = validate_email(e)
-            valid.append(v["email"])
-        except EmailNotValidError:
-            app.logger.warning("Invalid email skipped: %s", e)
-    if not valid:
-        raise ValueError("Brak poprawnych adresów e-mail do wysłania.")
-    msg = EmailMessage()
-    msg["From"] = f"{EMAIL_FROM_NAME} <{EMAIL_FROM or SMTP_USER}>"
-    msg["To"] = ", ".join(valid)
-    msg["Subject"] = subject
-    msg.set_content("Wiadomość w HTML. Jeśli nie widzisz treści, otwórz e-mail w formacie HTML.")
-    msg.add_alternative(html_body, subtype="html")
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
-        s.starttls()
-        s.login(SMTP_USER, SMTP_PASS)
-        s.send_message(msg)
-    return True
-
 @app.route("/")
 @app.route("/index")
 def index2():
     return render_template("index.html")
-
-@app.route("/download/<path:filename>", methods=["GET"])
-def download_file(filename):
-    safe_name = secure_filename(filename)
-    path = os.path.join(TMP_DIR, safe_name)
-    if not os.path.exists(path):
-        abort(404)
-    return send_file(path, as_attachment=True, download_name=safe_name)
 
 @app.route("/api/get_data_structure", methods=["GET"])
 def api_get_data_structure():
@@ -666,10 +569,6 @@ def api_generate():
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
         if not os.path.exists(tmp_path):
             return jsonify({"success": False, "error": "Plik nie został utworzony."}), 500
-
-        safe_name = secure_filename(filename)
-        download_url = request.url_root.rstrip("/") + url_for("download_file", filename=safe_name)
-
         logo_html = f'<img src="{LOGO_URL}" alt="Logo" style="max-height:40px; margin-bottom:8px;" />' if LOGO_URL else ""
         bg = "#F47B20"
         html_body = f"""
@@ -680,17 +579,14 @@ def api_generate():
                     {logo_html}
                     <h2 style="color:{bg}; margin:0;">Twoje formatki</h2>
                 </div>
-                <p>Cześć,<br>Wygenerowaliśmy plik z formatkami dla pionu <strong>{pion}</strong>.</p>
-                <p>Aby pobrać plik, kliknij tutaj: <a href="{download_url}">{download_url}</a></p>
-                <p>Link będzie działał dopóki plik znajduje się na serwerze (katalog tmp).</p>
+                <p>Cześć,<br>W załączeniu znajdziesz wygenerowany plik z formatkami dla pionu <strong>{pion}</strong>.</p>
                 <p>Pozdrawiamy,<br>Zespół Product Content</p>
             </div>
         </body>
         </html>
         """
-        _send_email_with_link(emails, f"Twój plik z formatkami - {pion}", html_body)
-
-        return jsonify({"success": True, "message": "Wysłano e-maile z linkiem do pobrania.", "download_url": download_url})
+        _send_email_with_attachment(emails, f"Twój plik z formatkami - {pion}", html_body, tmp_path)
+        return jsonify({"success": True, "message": "Wysłano e-maile."})
     except Exception as e:
         tb = traceback.format_exc()
         app.logger.error("Exception in api_generate:\n%s", tb)
