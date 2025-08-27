@@ -3,7 +3,7 @@ import re
 import traceback
 import unicodedata
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, abort, url_for
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import pandas as pd
@@ -23,6 +23,8 @@ SMTP_PASS = os.getenv("SMTP_PASS")
 EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Formatki OBI")
 LOGO_URL = os.getenv("LOGO_URL", "")
+
+ENABLE_STYLING = os.getenv("ENABLE_STYLING", "0") == "1"
 
 TMP_DIR = os.path.join(os.getcwd(), "tmp")
 os.makedirs(TMP_DIR, exist_ok=True)
@@ -59,23 +61,15 @@ def _detect_columns(df):
     return col0, col1, col2
 
 def _detect_columns_from_headers(headers):
-    # headers: list of header strings
     cols = {str(c).strip().lower(): str(c) for c in headers if c is not None}
     if 'gt' in cols and 'kw' in cols and 'pion' in cols:
         return cols['gt'], cols['kw'], cols['pion']
-    # fallback: first three headers
     col0 = headers[0] if len(headers) > 0 else headers[0]
     col1 = headers[1] if len(headers) > 1 else headers[0]
     col2 = headers[2] if len(headers) > 2 else headers[0]
     return col0, col1, col2
 
 def _safe_sheet_name(name, existing_names=None):
-    """
-    Generate sheet name safe for Excel:
-      - replace forbidden chars
-      - truncate to 31 chars (showing '...' if truncated)
-      - ensure uniqueness using existing_names (or internal set)
-    """
     if existing_names is None:
         existing = _safe_sheet_name._internal_used
     else:
@@ -114,13 +108,6 @@ def _safe_sheet_name(name, existing_names=None):
 _safe_sheet_name._internal_used = set()
 
 def _cmp_norm_for_match(s):
-    """
-    Normalize string for comparisons:
-    - unicode NFKC
-    - strip
-    - remove certain cross symbols that appear in source (✕, ×, ✖, ✗, ✘)
-    - collapse whitespace and lowercase
-    """
     if s is None:
         return ""
     s = str(s)
@@ -259,14 +246,6 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
     return out
 
 def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desired_attributes, filename):
-    """
-    Streaming writer: nie trzymamy całego DataFrame w pamięci.
-    Dla każdego GT+KW:
-      - otwieramy plik źródłowy w trybie read_only,
-      - iterujemy wiersze i filtrujemy,
-      - od razu zapisujemy arkusz do pliku wynikowego (write_only Workbook).
-    Zwraca (tmp_path, found_any)
-    """
     tmp_path = os.path.join(TMP_DIR, secure_filename(filename))
     found_any = False
     used_sheet_names = set()
@@ -274,22 +253,18 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
     if not os.path.exists(BASE_XLSX):
         raise FileNotFoundError(f"Plik nie znaleziony: {BASE_XLSX}")
 
-    # utwórz plik wynikowy w trybie write_only
     wb_out = Workbook(write_only=True)
 
-    # Przygotowanie pomocnicze: nazwa arkusza źródłowego
     src_wb = load_workbook(BASE_XLSX, read_only=True, data_only=True)
     src_sheet_name = "Arkusz1" if "Arkusz1" in src_wb.sheetnames else src_wb.sheetnames[0]
     src_wb.close()
 
     for gt in gt_list:
         for kw in kw_list:
-            # normalizacje porównań
             pion_norm = _cmp_norm_for_match(pion)
             gt_norm = _cmp_norm_for_match(gt)
             kw_norm = _cmp_norm_for_match(kw)
 
-            # otwórz źródłowy plik na nowo (aby iterować od początku, bez trzymania w pamięci)
             wb_src = load_workbook(BASE_XLSX, read_only=True, data_only=True)
             ws_src = wb_src[src_sheet_name]
 
@@ -301,12 +276,9 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
                 continue
 
             headers = [h if h is not None else f"col{i}" for i, h in enumerate(headers)]
-            # detekcja kolumn wg nagłówków
             gt_col_name, kw_col_name, pion_col_name = _detect_columns_from_headers(headers)
-
-            # mapowanie nagłówków na indeksy
             header_to_idx = {str(h).strip(): i for i, h in enumerate(headers)}
-            # safe fetch index function (case-insensitive)
+
             def _find_idx_by_name_case_insensitive(name):
                 name_l = str(name).strip().lower()
                 for i, h in enumerate(headers):
@@ -320,14 +292,11 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
             kw_idx = _find_idx_by_name_case_insensitive(kw_col_name)
             pion_idx = _find_idx_by_name_case_insensitive(pion_col_name)
 
-            # punktor columns: indeksy gdzie nagłówek zaczyna się od 'punktor' (case-insensitive)
             punktor_idxs = [i for i, h in enumerate(headers) if h and str(h).strip().lower().startswith("punktor")]
             if not punktor_idxs:
-                # fallback: columns 11..25 (0-based indices)
                 cand = list(range(10, min(len(headers), 26)))
                 punktor_idxs = [i for i in cand if i < len(headers)]
 
-            # przygotuj nazwę arkusza (kod GT + KW)
             gt_raw = str(gt).strip()
             kw_str = str(kw).strip()
             gt_norm_for_code = re.sub(r'\s+', ' ', gt_raw)
@@ -340,21 +309,16 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
             raw_name = f"{code} - {gt_raw} - {kw_str}"
             sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
 
-            # create write-only worksheet
             ws_out = wb_out.create_sheet(title=sheet_name)
 
-            # Write top header rows (1: code + GT, 2: KW)
             ws_out.append([f"{code} - {gt_raw}"])
             ws_out.append([kw_str])
 
-            # We will determine dyn_headers on first matched row
             dyn_headers = []
             headers_written = False
             matched_rows_count = 0
 
-            # iterate source rows
             for row in it:
-                # safely get values by index
                 def _val(idx):
                     if idx is None:
                         return ""
@@ -368,13 +332,10 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
                     val_gt = _val(gt_idx)
                     val_kw = _val(kw_idx)
                 except Exception:
-                    # if indices invalid, skip
                     continue
 
                 if _cmp_norm_for_match(val_pion) == pion_norm and _cmp_norm_for_match(val_gt) == gt_norm and _cmp_norm_for_match(val_kw) == kw_norm:
-                    # matched row
                     if not headers_written:
-                        # determine dyn_headers from punktor cols in this first matched row
                         seen = []
                         for pi in punktor_idxs:
                             v = _val(pi)
@@ -386,15 +347,11 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
                         else:
                             dyn_headers = desired_attributes.copy() if desired_attributes else []
                         all_columns = desired_base + dyn_headers
-                        # write header row (third row)
                         ws_out.append(all_columns)
                         headers_written = True
 
-                    # build output row in order of all_columns
                     out_row = []
-                    # base columns: attempt to find column in source headers by case-insensitive match
                     for base_col in desired_base:
-                        # try find exact header
                         found_idx = None
                         base_l = base_col.strip().lower()
                         for i, h in enumerate(headers):
@@ -409,10 +366,7 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
                         else:
                             out_row.append("")
 
-                    # dynamic headers: for each dyn header (which originally came from punktor values or desired_attributes),
-                    # attempt to extract matching value from punktor cols or leave blank
                     for dh in dyn_headers:
-                        # search punktor cols for value starting with dh label or exact match
                         found_val = ""
                         for pi in punktor_idxs:
                             v = _val(pi)
@@ -421,11 +375,9 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
                             v_s = str(v).strip()
                             if not v_s:
                                 continue
-                            # if dyn header equals the cell value, use it; otherwise if header label appears prefix, try
                             if v_s == dh:
                                 found_val = v_s
                                 break
-                            # If dh is desired_attribute (contains ':'), we can't reliably parse - leave blank (or copy full cell if needed)
                         out_row.append(found_val)
 
                     ws_out.append(out_row)
@@ -434,18 +386,10 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
 
             wb_src.close()
 
-            # jeśli nie było żadnego pasującego wiersza -> usuń puste arkusze (write_only workbook nie pozwala na usuwanie prostym wb.remove)
-            # niestety write_only nie wspiera usuwania stworzonych sheetów łatwo; workaround: jeśli nie zapisaliśmy nagłówków (czyli tylko dwa wiersze top)
-            # to pozostawimy taki arkusz z minimalnymi nagłówkami (można później usunąć — ale by nie komplikować, zostawiamy tylko gdy matched_rows_count>0)
             if matched_rows_count == 0:
-                # Zaimplementujemy mały hack: oznacz arkusz content jako "EMPTY" w komórce A3 żeby _style_workbook mógł ewentualnie skompresować,
-                # ale lepiej: nie tworzyć arkusza wcale — ale write_only nie pozwala na 'cofnięcie' create_sheet; prostsze: pozostawić arkusz tylko jeśli miał treść.
-                # Niestety nie ma prostego API do usunięcia write_only sheet; akceptujemy, że arkusz zostanie, ale bez danych.
                 app.logger.info("No rows for GT=%s KW=%s (sheet=%s)", gt, kw, sheet_name)
-                # Optionally write a placeholder row
                 ws_out.append(["(brak pasujących wierszy)"])
 
-    # Dodaj zakładkę Wymagania (mała lista) — to mały payload, OK użyć append
     reqs = [
         '📸 Wymagania dotyczące zdjęć:',
         '- Zdjęcia minimum 1500 px na krótszy bok',
@@ -464,7 +408,6 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
     for r in reqs:
         ws_req.append([r])
 
-    # zapisz workbook
     try:
         wb_out.save(tmp_path)
     except Exception as e:
@@ -476,11 +419,11 @@ def _write_excel_and_format_streaming(pion, gt_list, kw_list, desired_base, desi
         except Exception:
             pass
 
-    # sformatuj plik (ten krok korzysta z load_workbook i może być trochę pamięciochłonny, ale to jednorazowe)
-    try:
-        _style_workbook(tmp_path)
-    except Exception:
-        app.logger.exception("Error styling workbook %s", tmp_path)
+    if ENABLE_STYLING:
+        try:
+            _style_workbook(tmp_path)
+        except Exception:
+            app.logger.exception("Error styling workbook %s", tmp_path)
 
     return tmp_path, found_any
 
@@ -536,10 +479,46 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
         s.send_message(msg)
     return True
 
+def _send_email_with_link(to_emails, subject, html_body):
+    """
+    Lekka wersja wysyłki: nie dołączamy pliku — tylko wysyłamy wiadomość HTML (np. z linkiem do pobrania).
+    Dzięki temu nie czytamy załącznika do pamięci.
+    """
+    if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
+        raise RuntimeError("SMTP nie jest skonfigurowany (SMTP_HOST/SMTP_USER/SMTP_PASS).")
+    valid = []
+    for e in to_emails:
+        try:
+            v = validate_email(e)
+            valid.append(v["email"])
+        except EmailNotValidError:
+            app.logger.warning("Invalid email skipped: %s", e)
+    if not valid:
+        raise ValueError("Brak poprawnych adresów e-mail do wysłania.")
+    msg = EmailMessage()
+    msg["From"] = f"{EMAIL_FROM_NAME} <{EMAIL_FROM or SMTP_USER}>"
+    msg["To"] = ", ".join(valid)
+    msg["Subject"] = subject
+    msg.set_content("Wiadomość w HTML. Jeśli nie widzisz treści, otwórz e-mail w formacie HTML.")
+    msg.add_alternative(html_body, subtype="html")
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
+        s.starttls()
+        s.login(SMTP_USER, SMTP_PASS)
+        s.send_message(msg)
+    return True
+
 @app.route("/")
 @app.route("/index")
 def index2():
     return render_template("index.html")
+
+@app.route("/download/<path:filename>", methods=["GET"])
+def download_file(filename):
+    safe_name = secure_filename(filename)
+    path = os.path.join(TMP_DIR, safe_name)
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, as_attachment=True, download_name=safe_name)
 
 @app.route("/api/get_data_structure", methods=["GET"])
 def api_get_data_structure():
@@ -687,6 +666,10 @@ def api_generate():
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
         if not os.path.exists(tmp_path):
             return jsonify({"success": False, "error": "Plik nie został utworzony."}), 500
+
+        safe_name = secure_filename(filename)
+        download_url = request.url_root.rstrip("/") + url_for("download_file", filename=safe_name)
+
         logo_html = f'<img src="{LOGO_URL}" alt="Logo" style="max-height:40px; margin-bottom:8px;" />' if LOGO_URL else ""
         bg = "#F47B20"
         html_body = f"""
@@ -697,14 +680,17 @@ def api_generate():
                     {logo_html}
                     <h2 style="color:{bg}; margin:0;">Twoje formatki</h2>
                 </div>
-                <p>Cześć,<br>W załączeniu znajdziesz wygenerowany plik z formatkami dla pionu <strong>{pion}</strong>.</p>
+                <p>Cześć,<br>Wygenerowaliśmy plik z formatkami dla pionu <strong>{pion}</strong>.</p>
+                <p>Aby pobrać plik, kliknij tutaj: <a href="{download_url}">{download_url}</a></p>
+                <p>Link będzie działał dopóki plik znajduje się na serwerze (katalog tmp).</p>
                 <p>Pozdrawiamy,<br>Zespół Product Content</p>
             </div>
         </body>
         </html>
         """
-        _send_email_with_attachment(emails, f"Twój plik z formatkami - {pion}", html_body, tmp_path)
-        return jsonify({"success": True, "message": "Wysłano e-maile."})
+        _send_email_with_link(emails, f"Twój plik z formatkami - {pion}", html_body)
+
+        return jsonify({"success": True, "message": "Wysłano e-maile z linkiem do pobrania.", "download_url": download_url})
     except Exception as e:
         tb = traceback.format_exc()
         app.logger.error("Exception in api_generate:\n%s", tb)
