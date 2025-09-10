@@ -3,7 +3,7 @@ import re
 import traceback
 import unicodedata
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, redirect
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import pandas as pd
@@ -31,6 +31,7 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 ALLOWED_DOMAIN = "obi.pl"
+INSTRUKCJA_LINK = "https://drive.google.com/file/d/1s4qkGRXTBxtpq6RpRUQdnqUumDyZhurp/view?usp=drive_link"
 
 def _load_df():
     if not os.path.exists(BASE_XLSX):
@@ -124,7 +125,7 @@ def _style_workbook(path):
         except Exception:
             pass
         try:
-            _compress_row_values_left(ws, 2, 9, min(23, ws.max_column))
+            _compress_row_values_left(ws, 2, 8, min(22, ws.max_column))
         except Exception:
             app.logger.debug("compress_row_values_left failed for sheet %s", name)
         try:
@@ -216,7 +217,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
     app.logger.info("Detected columns: GT=%s, KW=%s, PION=%s", gt_col, kw_col, pion_col)
     punktor_cols = [c for c in df.columns if str(c).strip().lower().startswith("punktor")]
     if not punktor_cols:
-        candidate_idxs = list(range(11, min(len(df.columns), 26)))
+        candidate_idxs = list(range(10, min(len(df.columns), 25)))
         punktor_cols = [df.columns[i] for i in candidate_idxs if i < len(df.columns)]
     app.logger.info("Punktor cols sample: %s", punktor_cols[:8])
     def _clean_val(v):
@@ -300,7 +301,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
             '- Opisane numerem OBI lub EAN',
             'Wymagania dotyczące opisu i tytułu:',
             '- Tytuł artykułu online ma limit do 80 znaków',
-            '- Opis artykułu powinien zawierać najważniejsze informacje opisowe z limitem 3997 znaków (3515 bez spacji)',
+            '- Opis artykułu powinien zawierać najważniejsze informacje opisowe z limitem 3997 znaków (3515 bez spacji)proszę o podanie opisu artykułu z uwzględnieniem najważniejszych cech/zalet/zastosowań. Opis może być w formie krótkiej notatki - celem jest zebranie wszystkich ważnych informacji na podstawie których będziemy mogli stworzyć pełnowartościowy opis dla klienta na naszej stronie internetowej.,'
             '- Dane znajdujące się w nawiasach klamrowych („{}”) stanowią możliwe opcje do wyboru — należy wybrać jedną z nich i wpisać ją w komórkę poniżej',
             '- Dane producenta - GPSR, są to dane, które pokazują się na stronie obi.pl jako dane wytwórcy, dane jakie należy podać to: Pełna nazwa firmy, adres siedziby oraz adres e-mail'
         ]
@@ -369,6 +370,10 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
 @app.route("/index")
 def index2():
     return render_template("index.html")
+
+@app.route("/instrukcja")
+def instrukcja():
+    return redirect(INSTRUKCJA_LINK)
 
 @app.route("/api/get_data_structure", methods=["GET"])
 def api_get_data_structure():
