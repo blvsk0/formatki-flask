@@ -359,7 +359,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
 
 def _create_excel_for_selection(pion, gt_list, kw_list):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    filename = f"Formatki-{pion}-{timestamp}.xlsx"
+    filename = f"{secure_filename(pion)}.xlsx"
     df = _load_df()
     desired_base = [
         "EAN",
