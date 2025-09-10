@@ -1,16 +1,9 @@
-﻿/* app.js - blok 3 (finalny frontend)
-   - dopieszczony UX: spinner overlay, blokowanie formularza,
-   - pokazanie linku do wygenerowanego pliku (jeśli backend zwróci url),
-   - zapamiętywanie email w localStorage,
-   - drobne poprawki dostępności i komunikaty.
-*/
 const $ = id => document.getElementById(id);
 const refs = {};
 ['pion','gtInput','kwInput','email','message','themeToggle','themeIcon','themeText','spinnerContainer','gtTags','kwTags','gtList','kwList'].forEach(i => refs[i] = $(i));
 
 let availableGTs = [], availableKWs = [], messageTimeout;
 
-// ========== Utilities ==========
 function clearMessage() {
   clearTimeout(messageTimeout);
   if (!refs.message) return;
@@ -34,7 +27,6 @@ function setLoading(on=true) {
     btn.disabled = on;
     if (on) btn.classList.add('sending'); else btn.classList.remove('sending');
   }
-  // disable inputs while loading
   ['pion','gtInput','kwInput','email'].forEach(id => {
     const el = $(id); if (el) el.disabled = on;
   });
@@ -73,7 +65,6 @@ function createDownloadButton(url, filename) {
   wrap.appendChild(a);
 }
 
-// ========== Form helpers ==========
 function resetFormExceptPion() {
   if (refs.gtTags) refs.gtTags.innerHTML = '';
   if (refs.kwTags) refs.kwTags.innerHTML = '';
@@ -81,7 +72,6 @@ function resetFormExceptPion() {
   if (refs.kwList) refs.kwList.innerHTML = '';
   if (refs.gtInput) refs.gtInput.value = '';
   if (refs.kwInput) refs.kwInput.value = '';
-  // don't clear email (we keep it)
 }
 function toggleTheme() {
   if (!refs.themeToggle) return;
@@ -91,7 +81,6 @@ function toggleTheme() {
   try { localStorage.theme = dark ? 'dark' : 'light'; } catch(e){}
 }
 
-// ========== Data loading ==========
 async function loadDataStructure() {
   try {
     const res = await fetch('/api/get_data_structure');
@@ -201,7 +190,6 @@ function selectKWTag() {
   refs.kwInput.value = '';
 }
 
-// ========== Paste handlers ==========
 refs.gtInput?.addEventListener('paste', async function(e) {
   try {
     e.preventDefault();
@@ -240,7 +228,6 @@ refs.kwInput?.addEventListener('paste', function(e) {
   }
 });
 
-// remove tag handler
 document.addEventListener('click', function(e) {
   if (e.target && e.target.matches && e.target.matches('.tags button')) {
     const sp = e.target.closest('span.tag');
@@ -251,7 +238,6 @@ document.addEventListener('click', function(e) {
   }
 });
 
-// ========== Submit ==========
 function validateEmailList(raw) {
   if (!raw) return [];
   const parts = raw.split(/[;,]/).map(s => s.trim()).filter(Boolean);
@@ -274,7 +260,6 @@ async function submitForm(e) {
 
   setLoading(true);
   saveLastEmail(emailRaw);
-  // remove previous download link if any
   const dlWrap = document.getElementById('downloadWrapper'); if (dlWrap) dlWrap.remove();
 
   try {
@@ -285,9 +270,7 @@ async function submitForm(e) {
     });
     const data = await res.json();
     if (res.ok && data.success) {
-      // show nice message
-      showMessage(`✅ Plik został wygenerowany i wysłany. Sprawdź skrzynkę mailową.<br><br>Nazwa pliku: <strong>${data.filename || 'formatki.xlsx'}</strong>`);
-      // jeśli backend zwróci link do pliku (file_url lub url), pokaż przycisk
+      showMessage(`✅ Plik został wygenerowany i wysłany. Sprawdź skrzynkę mailową. Miłego dnia i smacznej kawusi. ☕<br><br>Nazwa pliku: <strong>${data.filename || 'formatki.xlsx'}</strong>`);
       const fileUrl = data.file_url || data.url || data.fileUrl || data.download_url;
       if (fileUrl) createDownloadButton(fileUrl, data.filename || 'Pobierz plik');
     } else {
