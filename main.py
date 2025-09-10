@@ -23,6 +23,7 @@ SMTP_PASS = os.getenv("SMTP_PASS")
 EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Formatki OBI")
 LOGO_URL = os.getenv("LOGO_URL", "")
+INSTRUCTION_URL = "https://drive.google.com/file/d/1s4qkGRXTBxtpq6RpRUQdnqUumDyZhurp/view?usp=drive_link"
 
 TMP_DIR = os.path.join(os.getcwd(), "tmp")
 os.makedirs(TMP_DIR, exist_ok=True)
@@ -374,7 +375,7 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
 @app.route("/")
 @app.route("/index")
 def index2():
-    return render_template("index.html")
+    return render_template("index.html", instruction_url=INSTRUCTION_URL)
 
 @app.route("/api/get_data_structure", methods=["GET"])
 def api_get_data_structure():
