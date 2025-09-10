@@ -3,7 +3,7 @@ import re
 import traceback
 import unicodedata
 from datetime import datetime
-from flask import Flask, request, jsonify, render_template, send_file, redirect
+from flask import Flask, request, jsonify, render_template, send_file
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 import pandas as pd
@@ -31,22 +31,38 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 ALLOWED_DOMAIN = "obi.pl"
-INSTRUKCJA_LINK = "https://drive.google.com/file/d/1s4qkGRXTBxtpq6RpRUQdnqUumDyZhurp/view?usp=drive_link"
+
+_df_cache = None
+_df_cache_mtime = 0
 
 def _load_df():
+    global _df_cache, _df_cache_mtime
     if not os.path.exists(BASE_XLSX):
         raise FileNotFoundError(f"Plik nie znaleziony: {BASE_XLSX}")
-    df = pd.read_excel(BASE_XLSX, sheet_name="Arkusz1", header=0, dtype=str)
+    try:
+        mtime = os.path.getmtime(BASE_XLSX)
+    except Exception:
+        mtime = 0
+    if _df_cache is not None and mtime == _df_cache_mtime:
+        return _df_cache.copy()
+    df = pd.read_excel(BASE_XLSX, sheet_name="Arkusz1", header=0, dtype=str, engine="openpyxl")
     df = df.fillna("")
     def _norm(v):
-        if isinstance(v, str):
-            s = v.strip()
-            if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
-                s = s[1:-1].strip()
-            return s
-        return v
-    df = df.applymap(_norm)
-    return df
+        if v is None:
+            return ""
+        if not isinstance(v, str):
+            v = str(v)
+        s = v.strip()
+        if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+            s = s[1:-1].strip()
+        return s
+    try:
+        df = df.apply(lambda col: col.map(_norm))
+    except Exception:
+        df = df.applymap(_norm)
+    _df_cache = df
+    _df_cache_mtime = mtime
+    return df.copy()
 
 def _detect_columns(df):
     cols = {c.strip().lower(): c for c in df.columns}
@@ -271,9 +287,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                         out_row[h] = ""
                     rows_out.append(out_row)
                 out_df = pd.DataFrame(rows_out, columns=all_columns)
-                gt_str = str(gt).strip()
                 kw_str = str(kw).strip()
-                gt_str = re.sub(r'\s+', ' ', gt_str)
                 kw_str = re.sub(r'\s+', ' ', kw_str)
                 raw_name = f"{kw_str}"
                 sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
@@ -282,15 +296,6 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                     app.logger.info("Wrote sheet: %s rows=%d headers=%s", sheet_name, len(out_df), all_columns)
                 except Exception as ex:
                     app.logger.exception("Error writing sheet %s: %s", sheet_name, str(ex))
-        if str(pion).strip().lower() == "oświetlenie" and (not gt_list):
-            sel = df[df[pion_col].astype(str).str.strip().str.lower() == "oświetlenie"]
-            if sel.shape[0] > 0:
-                drop_cols = [c for c in ["GT", "KW", "PION", "Podział"] if c in sel.columns]
-                sel2 = sel.drop(columns=drop_cols, errors="ignore")
-                sheet_name = _safe_sheet_name("Oświetlenie", existing_names=used_sheet_names)
-                sel2.to_excel(writer, sheet_name=sheet_name, index=False)
-                app.logger.info("Wrote Oświetlenie sheet %s rows=%d", sheet_name, sel2.shape[0])
-                found_any = True
         reqs = [
             '📸 Wymagania dotyczące zdjęć:',
             '- Zdjęcia minimum 1500 px na krótszy bok',
@@ -301,7 +306,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
             '- Opisane numerem OBI lub EAN',
             'Wymagania dotyczące opisu i tytułu:',
             '- Tytuł artykułu online ma limit do 80 znaków',
-            '- Opis artykułu powinien zawierać najważniejsze informacje opisowe z limitem 3997 znaków (3515 bez spacji)proszę o podanie opisu artykułu z uwzględnieniem najważniejszych cech/zalet/zastosowań. Opis może być w formie krótkiej notatki - celem jest zebranie wszystkich ważnych informacji na podstawie których będziemy mogli stworzyć pełnowartościowy opis dla klienta na naszej stronie internetowej.,'
+            '- Opis artykułu powinien zawierać najważniejsze informacje opisowe z limitem 3997 znaków (3515 bez spacji)',
             '- Dane znajdujące się w nawiasach klamrowych („{}”) stanowią możliwe opcje do wyboru — należy wybrać jedną z nich i wpisać ją w komórkę poniżej',
             '- Dane producenta - GPSR, są to dane, które pokazują się na stronie obi.pl jako dane wytwórcy, dane jakie należy podać to: Pełna nazwa firmy, adres siedziby oraz adres e-mail'
         ]
@@ -370,10 +375,6 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
 @app.route("/index")
 def index2():
     return render_template("index.html")
-
-@app.route("/instrukcja")
-def instrukcja():
-    return redirect(INSTRUKCJA_LINK)
 
 @app.route("/api/get_data_structure", methods=["GET"])
 def api_get_data_structure():
@@ -477,7 +478,7 @@ def api_generate_debug():
         pion = data.get("pion", "").strip()
         gt_list = data.get("gtList", []) or []
         kw_list = data.get("kwList", []) or []
-        if not pion or (pion.lower() != "oświetlenie" and (not gt_list or not kw_list)):
+        if not pion or not gt_list or not kw_list:
             return jsonify({"success": False, "error": "Brakuje parametrów (pion/gtList/kwList)."}), 400
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
         if not os.path.exists(tmp_path):
@@ -513,7 +514,7 @@ def api_generate():
                     app.logger.info("Skipping non-allowed domain: %s", addr)
             except EmailNotValidError:
                 app.logger.warning("Invalid email skipped: %s", e)
-        if not pion or (pion.lower() != "oświetlenie" and (not gt_list or not kw_list)) or not emails:
+        if not pion or not gt_list or not kw_list or not emails:
             return jsonify({"success": False, "error": f"Brakuje parametrów (pion/gtList/kwList) lub brak poprawnych adresów z domeny @{ALLOWED_DOMAIN}."}), 400
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
         if not os.path.exists(tmp_path):
