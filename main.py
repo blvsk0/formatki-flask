@@ -23,7 +23,6 @@ SMTP_PASS = os.getenv("SMTP_PASS")
 EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)
 EMAIL_FROM_NAME = os.getenv("EMAIL_FROM_NAME", "Formatki OBI")
 LOGO_URL = os.getenv("LOGO_URL", "")
-INSTRUCTION_URL = "https://drive.google.com/file/d/1s4qkGRXTBxtpq6RpRUQdnqUumDyZhurp/view?usp=drive_link"
 
 TMP_DIR = os.path.join(os.getcwd(), "tmp")
 os.makedirs(TMP_DIR, exist_ok=True)
@@ -33,37 +32,24 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 ALLOWED_DOMAIN = "obi.pl"
 
-_df_cache = None
-_df_cache_mtime = 0
 
 def _load_df():
-    global _df_cache, _df_cache_mtime
     if not os.path.exists(BASE_XLSX):
         raise FileNotFoundError(f"Plik nie znaleziony: {BASE_XLSX}")
-    try:
-        mtime = os.path.getmtime(BASE_XLSX)
-    except Exception:
-        mtime = 0
-    if _df_cache is not None and mtime == _df_cache_mtime:
-        return _df_cache.copy()
-    df = pd.read_excel(BASE_XLSX, sheet_name="Arkusz1", header=0, dtype=str, engine="openpyxl")
+    df = pd.read_excel(BASE_XLSX, sheet_name="Arkusz1", header=0, dtype=str)
     df = df.fillna("")
+
     def _norm(v):
-        if v is None:
-            return ""
-        if not isinstance(v, str):
-            v = str(v)
-        s = v.strip()
-        if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
-            s = s[1:-1].strip()
-        return s
-    try:
-        df = df.apply(lambda col: col.map(_norm))
-    except Exception:
-        df = df.applymap(_norm)
-    _df_cache = df
-    _df_cache_mtime = mtime
-    return df.copy()
+        if isinstance(v, str):
+            s = v.strip()
+            if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+                s = s[1:-1].strip()
+            return s
+        return v
+
+    df = df.map(_norm)
+    return df
+
 
 def _detect_columns(df):
     cols = {c.strip().lower(): c for c in df.columns}
@@ -73,6 +59,7 @@ def _detect_columns(df):
     col1 = df.columns[1] if len(df.columns) > 1 else df.columns[0]
     col2 = df.columns[2] if len(df.columns) > 2 else df.columns[0]
     return col0, col1, col2
+
 
 def _safe_sheet_name(name, existing_names=None):
     if existing_names is None:
@@ -95,6 +82,7 @@ def _safe_sheet_name(name, existing_names=None):
     existing_names.add(candidate)
     return candidate
 
+
 def _cmp_norm_for_match(s):
     if s is None:
         return ""
@@ -104,6 +92,7 @@ def _cmp_norm_for_match(s):
     s = re.sub(r'[\u2715\u00D7\u2716\u2717\u2718]', '', s)
     s = re.sub(r'\s+', ' ', s)
     return s.lower()
+
 
 def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
     vals = []
@@ -116,6 +105,7 @@ def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
     for i, v in enumerate(vals):
         ws.cell(row=row_idx, column=col_start_idx + i).value = v
 
+
 def _style_workbook(path):
     from openpyxl.utils import get_column_letter
     wb = load_workbook(path)
@@ -124,6 +114,23 @@ def _style_workbook(path):
     header_row_height = 30
     for name in wb.sheetnames:
         if name == "Wymagania":
+            ws = wb[name]
+            try:
+                ws.column_dimensions['A'].width = 40
+            except Exception:
+                pass
+            try:
+                for r in (10, 11, 12):
+                    cell = ws.cell(row=r, column=1)
+                    if cell.value:
+                        cell.alignment = Alignment(wrap_text=True, vertical="top")
+                        lines = str(cell.value).count("\n") + 1
+                        try:
+                            ws.row_dimensions[r].height = max(20, 15 * lines)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             continue
         ws = wb[name]
         try:
@@ -142,7 +149,7 @@ def _style_workbook(path):
         except Exception:
             pass
         try:
-            _compress_row_values_left(ws, 2, 8, min(22, ws.max_column))
+            _compress_row_values_left(ws, 2, 9, min(23, ws.max_column))
         except Exception:
             app.logger.debug("compress_row_values_left failed for sheet %s", name)
         try:
@@ -176,6 +183,7 @@ def _style_workbook(path):
             pass
     wb.save(path)
     wb.close()
+
 
 def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
     import re
@@ -226,6 +234,22 @@ def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
         out[attr] = found
     return out
 
+
+def _wrap_every_n_words(s, n=5):
+    if not s:
+        return s
+    parts = re.split(r'(\s+)', s)
+    words = []
+    for p in parts:
+        if p.strip() == "":
+            continue
+        words.append(p)
+    lines = []
+    for i in range(0, len(words), n):
+        lines.append(" ".join(words[i:i+n]))
+    return "\n".join(lines)
+
+
 def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename):
     tmp_path = os.path.join(TMP_DIR, secure_filename(filename))
     found_any = False
@@ -234,7 +258,7 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
     app.logger.info("Detected columns: GT=%s, KW=%s, PION=%s", gt_col, kw_col, pion_col)
     punktor_cols = [c for c in df.columns if str(c).strip().lower().startswith("punktor")]
     if not punktor_cols:
-        candidate_idxs = list(range(10, min(len(df.columns), 25)))
+        candidate_idxs = list(range(10, min(len(df.columns), 30)))
         punktor_cols = [df.columns[i] for i in candidate_idxs if i < len(df.columns)]
     app.logger.info("Punktor cols sample: %s", punktor_cols[:8])
     def _clean_val(v):
@@ -288,15 +312,22 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
                         out_row[h] = ""
                     rows_out.append(out_row)
                 out_df = pd.DataFrame(rows_out, columns=all_columns)
-                kw_str = str(kw).strip()
-                kw_str = re.sub(r'\s+', ' ', kw_str)
-                raw_name = f"{kw_str}"
+                raw_name = f"{kw}"
                 sheet_name = _safe_sheet_name(raw_name, existing_names=used_sheet_names)
                 try:
                     out_df.to_excel(writer, sheet_name=sheet_name, index=False)
                     app.logger.info("Wrote sheet: %s rows=%d headers=%s", sheet_name, len(out_df), all_columns)
                 except Exception as ex:
                     app.logger.exception("Error writing sheet %s: %s", sheet_name, str(ex))
+        if str(pion).strip().lower() == "oświetlenie" and (not gt_list):
+            sel = df[df[pion_col].astype(str).str.strip().str.lower() == "oświetlenie"]
+            if sel.shape[0] > 0:
+                drop_cols = [c for c in ["GT", "KW", "PION", "Podział"] if c in sel.columns]
+                sel2 = sel.drop(columns=drop_cols, errors="ignore")
+                sheet_name = _safe_sheet_name("Oświetlenie", existing_names=used_sheet_names)
+                sel2.to_excel(writer, sheet_name=sheet_name, index=False)
+                app.logger.info("Wrote Oświetlenie sheet %s rows=%d", sheet_name, sel2.shape[0])
+                found_any = True
         reqs = [
             '📸 Wymagania dotyczące zdjęć:',
             '- Zdjęcia minimum 1500 px na krótszy bok',
@@ -307,17 +338,24 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
             '- Opisane numerem OBI lub EAN',
             'Wymagania dotyczące opisu i tytułu:',
             '- Tytuł artykułu online ma limit do 80 znaków',
-            '- Opis artykułu powinien zawierać najważniejsze informacje opisowe z limitem 3997 znaków (3515 bez spacji) proszę o podanie opisu artykułu z uwzględnieniem najważniejszych cech/zalet/zastosowań. Opis może być w formie krótkiej notatki - celem jest zebranie wszystkich ważnych informacji na podstawie których będziemy mogli stworzyć pełnowartościowy opis dla klienta na naszej stronie internetowej.',
+            '- Opis artykułu powinien zawierać najważniejsze informacje opisowe z limitem 3997 znaków (3515 bez spacji)',
             '- Dane znajdujące się w nawiasach klamrowych („{}”) stanowią możliwe opcje do wyboru — należy wybrać jedną z nich i wpisać ją w komórkę poniżej',
             '- Dane producenta - GPSR, są to dane, które pokazują się na stronie obi.pl jako dane wytwórcy, dane jakie należy podać to: Pełna nazwa firmy, adres siedziby oraz adres e-mail'
         ]
-        pd.DataFrame(reqs).to_excel(writer, sheet_name="Wymagania", index=False, header=False)
+        processed = []
+        for i, line in enumerate(reqs):
+            if i in (9, 10, 11):
+                processed.append(_wrap_every_n_words(line, 5))
+            else:
+                processed.append(line)
+        pd.DataFrame(processed).to_excel(writer, sheet_name="Wymagania", index=False, header=False)
     app.logger.info("_write_excel_and_format finished; found_any=%s tmp_path=%s", found_any, tmp_path)
     try:
         _style_workbook(tmp_path)
     except Exception:
         app.logger.exception("Error styling workbook %s", tmp_path)
     return tmp_path, found_any
+
 
 def _create_excel_for_selection(pion, gt_list, kw_list):
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -327,7 +365,6 @@ def _create_excel_for_selection(pion, gt_list, kw_list):
         "EAN",
         "Nr. Art dostawcy",
         "Gwarancja: (lata)",
-        "Tytuł artykułu online (limit 80 znaków)",
         "Opis artykułu (3997 znaków (3515 bez spacji))",
         "W zestawie:",
         "Dane producenta - GPSR:"
@@ -342,6 +379,7 @@ def _create_excel_for_selection(pion, gt_list, kw_list):
     ]
     tmp_path, found_any = _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_attributes, filename)
     return tmp_path, filename, found_any
+
 
 def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
     if not SMTP_HOST or not SMTP_USER or not SMTP_PASS:
@@ -375,7 +413,7 @@ def _send_email_with_attachment(to_emails, subject, html_body, attachment_path):
 @app.route("/")
 @app.route("/index")
 def index2():
-    return render_template("index.html", instruction_url=INSTRUCTION_URL)
+    return render_template("index.html")
 
 @app.route("/api/get_data_structure", methods=["GET"])
 def api_get_data_structure():
@@ -479,7 +517,7 @@ def api_generate_debug():
         pion = data.get("pion", "").strip()
         gt_list = data.get("gtList", []) or []
         kw_list = data.get("kwList", []) or []
-        if not pion or not gt_list or not kw_list:
+        if not pion or (pion.lower() != "oświetlenie" and (not gt_list or not kw_list)):
             return jsonify({"success": False, "error": "Brakuje parametrów (pion/gtList/kwList)."}), 400
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
         if not os.path.exists(tmp_path):
@@ -515,7 +553,7 @@ def api_generate():
                     app.logger.info("Skipping non-allowed domain: %s", addr)
             except EmailNotValidError:
                 app.logger.warning("Invalid email skipped: %s", e)
-        if not pion or not gt_list or not kw_list or not emails:
+        if not pion or (pion.lower() != "oświetlenie" and (not gt_list or not kw_list)) or not emails:
             return jsonify({"success": False, "error": f"Brakuje parametrów (pion/gtList/kwList) lub brak poprawnych adresów z domeny @{ALLOWED_DOMAIN}."}), 400
         tmp_path, filename, found_any = _create_excel_for_selection(pion, gt_list, kw_list)
         if not os.path.exists(tmp_path):
