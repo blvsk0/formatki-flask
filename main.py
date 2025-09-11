@@ -338,7 +338,6 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
             '- Więcej zdjęć = lepiej',
             '- Opisane numerem OBI lub EAN',
             'Wymagania dotyczące opisu i tytułu:',
-            '- Tytuł artykułu online ma limit do 80 znaków',
             '- Opis artykułu powinien zawierać najważniejsze informacje opisowe z limitem 3997 znaków (3515 bez spacji), prosimy o podanie opisu artykułu z uwzględnieniem najważniejszych cech/zalet/zastosowań. Celem jest zebranie wszystkich ważnych informacji.',
             '- Dane znajdujące się w nawiasach klamrowych („{}”) stanowią możliwe opcje do wyboru — należy wybrać jedną z nich i wpisać ją w komórkę poniżej',
             '- Dane producenta - GPSR, są to dane, które pokazują się na stronie obi.pl jako dane wytwórcy, dane jakie należy podać to: Pełna nazwa firmy, adres siedziby oraz adres e-mail'
