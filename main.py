@@ -109,50 +109,65 @@ def _compress_row_values_left(ws, row_idx, col_start_idx, col_end_idx):
 
 def _style_workbook(path):
     from openpyxl.utils import get_column_letter
+    import math
     wb = load_workbook(path)
     header_fill = PatternFill(start_color="F47B20", end_color="F47B20", fill_type="solid")
     header_font = Font(bold=True)
     header_row_height = 30
+
     for name in wb.sheetnames:
+        ws = wb[name]
+
         if name == "Wymagania":
-            ws = wb[name]
             try:
-                ws.column_dimensions['A'].width = 40
-            except Exception:
-                pass
-            try:
+                col_a = 'A'
+                try:
+                    ws.column_dimensions[col_a].width = 45
+                except Exception:
+                    pass
                 for r in (9, 10, 11):
-                    cell = ws.cell(row=r, column=1)
-                    if cell.value:
+                    try:
+                        cell = ws.cell(row=r, column=1)
+                        if cell.value is None:
+                            continue
+                        text = str(cell.value).strip()
+                        words = len(text.split())
+                        lines = max(1, math.ceil(words / 5))
+                        height = max(24, int(lines * 18 + 6))
+                        ws.row_dimensions[r].height = height
                         cell.alignment = Alignment(wrap_text=True, vertical="top")
-                        lines = str(cell.value).count("\n") + 1
-                        try:
-                            ws.row_dimensions[r].height = max(24, 15 * lines)
-                        except Exception:
-                            pass
+                    except Exception:
+                        pass
             except Exception:
                 pass
             continue
-        ws = wb[name]
+
         try:
             first_cell = ws.cell(row=1, column=1).value
             if (first_cell is None or str(first_cell).strip() == "") and ws.max_column > 1:
                 ws.delete_cols(1)
         except Exception:
             pass
+
         if ws.max_row >= 1:
             for cell in list(ws[1]):
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = Alignment(wrap_text=True, horizontal="center", vertical="center")
+                try:
+                    cell.fill = header_fill
+                    cell.font = header_font
+                    cell.alignment = Alignment(wrap_text=True, horizontal="center", vertical="center")
+                except Exception:
+                    pass
+
         try:
             ws.row_dimensions[1].height = header_row_height
         except Exception:
             pass
+
         try:
             _compress_row_values_left(ws, 2, 9, min(23, ws.max_column))
         except Exception:
             app.logger.debug("compress_row_values_left failed for sheet %s", name)
+
         try:
             max_rows_to_check = min(ws.max_row, 20)
             for col_idx in range(1, ws.max_column + 1):
@@ -175,15 +190,21 @@ def _style_workbook(path):
                     pass
         except Exception:
             app.logger.debug("auto column width failed for sheet %s", name)
+
         try:
             for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
                 for cell in row:
-                    if cell.value and isinstance(cell.value, str) and "\n" in cell.value:
-                        cell.alignment = Alignment(wrap_text=True, vertical="top")
+                    try:
+                        if cell.value and isinstance(cell.value, str) and "\n" in cell.value:
+                            cell.alignment = Alignment(wrap_text=True, vertical="top")
+                    except Exception:
+                        pass
         except Exception:
             pass
+
     wb.save(path)
     wb.close()
+
 
 
 def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
