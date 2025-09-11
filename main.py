@@ -127,7 +127,7 @@ def _style_workbook(path):
                         cell.alignment = Alignment(wrap_text=True, vertical="top")
                         lines = str(cell.value).count("\n") + 1
                         try:
-                            ws.row_dimensions[r].height = max(20, 15 * lines)
+                            ws.row_dimensions[r].height = max(24, 15 * lines)
                         except Exception:
                             pass
             except Exception:
