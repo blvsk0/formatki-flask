@@ -121,7 +121,7 @@ def _style_workbook(path):
             except Exception:
                 pass
             try:
-                for r in (10, 11, 12):
+                for r in (9, 10, 11):
                     cell = ws.cell(row=r, column=1)
                     if cell.value:
                         cell.alignment = Alignment(wrap_text=True, vertical="top")
