@@ -625,7 +625,7 @@ def api_generate():
             <div style="max-width:680px; margin:0 auto; background:#ffffff; color:#000; padding:20px; border-radius:8px;">
                 <div style="display:flex; align-items:center; gap:12px;">
                     {logo_html}
-                    <h2 style="color:{bg}; margin:0;">Twoje formatki</h2>
+                    <h2 style="color:{bg}; margin:0;">Product Content</h2>
                 </div>
                 <p>Cześć,<br>W załączeniu znajdziesz wygenerowany plik z formatkami dla pionu <strong>{pion}</strong> Miłego dnia i smacznej kawusi ☕.</p>
                 <p>Pozdrawiamy,<br>Zespół Product Content</p>
