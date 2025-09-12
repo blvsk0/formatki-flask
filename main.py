@@ -206,7 +206,6 @@ def _style_workbook(path):
     wb.close()
 
 
-
 def _extract_attribute_from_row(row, desired_attributes, punktor_cols):
     import re
     def _clean_val(v):
@@ -292,9 +291,43 @@ def _write_excel_and_format(pion, gt_list, kw_list, df, desired_base, desired_at
         if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
             s = s[1:-1].strip()
         return s
+    def _gt_prefix(gt):
+        if gt is None:
+            return ""
+        s = str(gt)
+        digits = re.sub(r'\D', '', s)
+        if digits:
+            return digits[:4]
+        return s.strip()[:4]
+    selected_map = {}
+    for gt in gt_list:
+        selected_map.setdefault(gt, [])
+    for item in kw_list:
+        m = re.match(r'^\s*(\d{1,4})\s+(.*\S)\s*$', str(item))
+        if m:
+            prefix = m.group(1)
+            kw_name = m.group(2)
+            matched_gt = None
+            for gt in gt_list:
+                if _gt_prefix(gt) == prefix:
+                    matched_gt = gt
+                    break
+            if not matched_gt:
+                for g in df[gt_col].astype(str).tolist():
+                    if _gt_prefix(g) == prefix:
+                        matched_gt = g
+                        break
+            if matched_gt:
+                selected_map.setdefault(matched_gt, []).append(kw_name)
+            else:
+                for gt in gt_list:
+                    selected_map.setdefault(gt, []).append(kw_name)
+        else:
+            for gt in gt_list:
+                selected_map.setdefault(gt, []).append(str(item))
     with pd.ExcelWriter(tmp_path, engine="xlsxwriter") as writer:
-        for gt in gt_list:
-            for kw in kw_list:
+        for gt, kws in selected_map.items():
+            for kw in kws:
                 sel = df[
                     (df[pion_col].astype(str).str.strip().str.lower() == str(pion).strip().lower())
                     & (df[gt_col].astype(str).str.strip().str.lower() == str(gt).strip().lower())
@@ -476,15 +509,20 @@ def api_get_kw_for_gt_list():
     try:
         df = _load_df()
         gt_col, kw_col, pion_col = _detect_columns(df)
-        kws = set()
+        out = []
+        seen = set()
         for gt in gt_list:
-            if not gt:
-                continue
+            prefix = re.sub(r'\D', '', str(gt))[:4]
+            if not prefix:
+                prefix = str(gt).strip()[:4]
             matches = df[df[gt_col].astype(str).str.strip().str.lower() == str(gt).strip().lower()]
             for v in matches[kw_col].astype(str).tolist():
                 if v and str(v).strip():
-                    kws.add(str(v).strip())
-        return jsonify(sorted(kws))
+                    label = f"{prefix} {str(v).strip()}"
+                    if label not in seen:
+                        seen.add(label)
+                        out.append(label)
+        return jsonify(sorted(out))
     except Exception as e:
         app.logger.exception("get_kw_for_gt_list error")
         return jsonify({"error": str(e)}), 500
